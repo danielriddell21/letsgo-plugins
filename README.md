@@ -10,6 +10,7 @@ own configuration stays a closed set.
 | --- | --- | --- |
 | `letsgo-multi` | `archive-layout` | ships every command in one archive per target, and one formula that installs them all |
 | `letsgo-env` | `ldflags` | compiles values from the environment into the binary |
+| `letsgo-cask` | none — reads the published release | writes a Homebrew cask for a macOS build |
 
 ## The contract
 
@@ -77,3 +78,24 @@ already public the moment it shipped. letsgo says so at plan time:
 
 A value that must stay secret belongs in the environment the program runs in,
 not in the program.
+
+## letsgo-cask
+
+letsgo writes formulas, not casks. A formula is the right shape for a
+command-line program; a repository shipping a windowed build alongside its CLI
+wants both.
+
+This is not a hook. It reads the `letsgo.json` a release already published and
+writes a cask from it, so there is nothing to pin and nothing it can do to the
+bytes — by the time it runs, the release is over.
+
+```sh
+letsgo-cask dist/letsgo.json --repo you/gambit --variant gui
+```
+
+`--variant` names the variant whose archives the cask installs, as spelled in
+`letsgo.mod`; without it the release's own archives are used. The cask goes to
+stdout, or to the file named by `-o`. Committing it to a tap is git's job.
+
+It emits `binary`, not `app`: letsgo publishes an executable, and claiming an
+`.app` would name something the archive does not contain.
