@@ -81,6 +81,8 @@ func run(args []string, out *os.File) error {
 	token := fs.String("token", "", "the cask's token; defaults to the archive's name")
 	desc := fs.String("desc", "", "one-line description")
 	homepage := fs.String("homepage", "", "defaults to the repository")
+	license := fs.String("license", "", "SPDX licence identifier, as Homebrew spells it")
+	caveats := fs.String("caveats", "", "text Homebrew prints after installing")
 	output := fs.String("o", "", "write here instead of stdout")
 
 	if err := fs.Parse(permute(fs, args)); err != nil {
@@ -98,7 +100,13 @@ func run(args []string, out *os.File) error {
 		return err
 	}
 
-	c, err := build(m, *repo, *variant, *token, *desc, *homepage)
+	c, err := build(m, *repo, *variant, caskFields{
+		Token:    *token,
+		Desc:     *desc,
+		Homepage: *homepage,
+		License:  *license,
+		Caveats:  *caveats,
+	})
 	if err != nil {
 		return err
 	}
@@ -175,6 +183,8 @@ type cask struct {
 	Name     string
 	Desc     string
 	Homepage string
+	License  string
+	Caveats  string
 
 	// ARM and Intel are the two macOS archives. Homebrew installs one cask on
 	// either architecture, so both live in one file under on_arm and on_intel.
@@ -189,7 +199,17 @@ type download struct {
 	SHA256 string
 }
 
-func build(m *manifest, repo, variant, token, desc, homepage string) (*cask, error) {
+// caskFields are the values a release cannot supply: they describe the
+// program rather than the artifacts, so they come from the command line.
+type caskFields struct {
+	Token    string
+	Desc     string
+	Homepage string
+	License  string
+	Caveats  string
+}
+
+func build(m *manifest, repo, variant string, f caskFields) (*cask, error) {
 	tag := m.Tag
 	if tag == "" {
 		tag = "v" + m.Version
@@ -203,11 +223,13 @@ func build(m *manifest, repo, variant, token, desc, homepage string) (*cask, err
 	}
 
 	c := &cask{
-		Token:    token,
+		Token:    f.Token,
 		Version:  m.Version,
 		Name:     m.Project,
-		Desc:     desc,
-		Homepage: homepage,
+		Desc:     f.Desc,
+		Homepage: f.Homepage,
+		License:  f.License,
+		Caveats:  f.Caveats,
 	}
 	if c.Homepage == "" {
 		c.Homepage = "https://github.com/" + repo
@@ -298,12 +320,26 @@ func (c *cask) render() string {
 	if c.Desc != "" {
 		fmt.Fprintf(&b, "  desc %s\n", quote(c.Desc))
 	}
-	fmt.Fprintf(&b, "  homepage %s\n\n", quote(c.Homepage))
+	fmt.Fprintf(&b, "  homepage %s\n", quote(c.Homepage))
+	if c.License != "" {
+		fmt.Fprintf(&b, "  license %s\n", quote(c.License))
+	}
+	b.WriteString("\n")
 
 	// binary rather than app: letsgo publishes an executable, not a bundle, so
 	// claiming an .app would name something the archive does not contain.
 	for _, name := range c.Binaries {
 		fmt.Fprintf(&b, "  binary %s\n", quote(name))
+	}
+
+	// Last, as Homebrew's own style orders it: caveats are what the user reads
+	// after everything else has been decided.
+	if c.Caveats != "" {
+		b.WriteString("\n  caveats <<~EOS\n")
+		for _, line := range strings.Split(strings.TrimRight(c.Caveats, "\n"), "\n") {
+			fmt.Fprintf(&b, "    %s\n", line)
+		}
+		b.WriteString("  EOS\n")
 	}
 
 	b.WriteString("end\n")

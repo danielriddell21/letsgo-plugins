@@ -149,12 +149,20 @@ writes a cask from it, so there is nothing to pin and nothing it can do to the
 bytes — by the time it runs, the release is over.
 
 ```sh
-letsgo-cask dist/letsgo.json --repo you/gambit --variant gui
+letsgo-cask dist/letsgo.json --repo you/gambit \
+  --desc "Watch two chess agents play in a native macOS window" \
+  --license MIT \
+  --caveats "The board opens a window and is macOS-only."
 ```
 
 `--variant` names the variant whose archives the cask installs, as spelled in
 `letsgo.mod`; without it the release's own archives are used. The cask goes to
 stdout, or to the file named by `-o`. Committing it to a tap is git's job.
+
+`--desc`, `--license` and `--caveats` describe the program rather than the
+artifacts, so the release cannot supply them and they are passed in. Each is
+omitted from the cask when empty rather than guessed at. `--caveats` renders as
+a heredoc, so it can run to several lines.
 
 It emits `binary`, not `app`: letsgo publishes an executable, and claiming an
 `.app` would name something the archive does not contain.
