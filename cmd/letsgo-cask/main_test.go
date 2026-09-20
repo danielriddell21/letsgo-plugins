@@ -141,3 +141,46 @@ func TestBaseStripsTheVersionAndPlatform(t *testing.T) {
 		}
 	}
 }
+
+func TestCaskCarriesTheLicence(t *testing.T) {
+	got := generate(t, "--repo", "you/gambit", "--license", "MIT", manifestFile(t, published))
+
+	if !strings.Contains(got, "  license \"MIT\"\n") {
+		t.Errorf("licence missing from:\n%s", got)
+	}
+}
+
+func TestCaskOmitsAnEmptyLicence(t *testing.T) {
+	got := generate(t, "--repo", "you/gambit", manifestFile(t, published))
+
+	if strings.Contains(got, "license") {
+		t.Errorf("an unset licence should say nothing rather than claim one:\n%s", got)
+	}
+}
+
+// Caveats are the one field a user actually reads after installing, and they
+// are routinely several lines, so they render as a heredoc.
+func TestCaskCarriesMultiLineCaveats(t *testing.T) {
+	got := generate(t, "--repo", "you/gambit",
+		"--caveats", "gambit opens a window and is macOS-only.\nOn Linux, run it in the terminal.",
+		manifestFile(t, published))
+
+	want := "  caveats <<~EOS\n" +
+		"    gambit opens a window and is macOS-only.\n" +
+		"    On Linux, run it in the terminal.\n" +
+		"  EOS\n"
+	if !strings.Contains(got, want) {
+		t.Errorf("caveats missing or misindented:\n%s", got)
+	}
+	if !strings.Contains(got, "  EOS\nend\n") {
+		t.Errorf("caveats should be the last stanza:\n%s", got)
+	}
+}
+
+func TestCaskOmitsEmptyCaveats(t *testing.T) {
+	got := generate(t, "--repo", "you/gambit", manifestFile(t, published))
+
+	if strings.Contains(got, "caveats") {
+		t.Errorf("no caveats means no stanza:\n%s", got)
+	}
+}
