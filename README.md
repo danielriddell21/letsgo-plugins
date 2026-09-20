@@ -22,23 +22,82 @@ object to stdin and reads one from stdout. Whatever comes back is written into
 plugin — a release stays reproducible on a machine that has none of these
 installed.
 
-Every plugin is pinned by digest, because a program that decides what gets
-built is a build input exactly as the compiler is.
+A plugin that answers a hook is pinned by digest, because a program that
+decides what gets built is a build input exactly as the compiler is. A plugin
+that only reads a finished release is not, because there is nothing left for it
+to decide.
 
 ## Installing
 
+Download the plugin from a [letsgo-plugins release][releases] and put it on
+`PATH`. In the workflow that publishes the release:
+
+```yaml
+- name: Install letsgo-multi
+  run: |
+    set -euo pipefail
+    version=v0.1.0
+    base=https://github.com/danielriddell21/letsgo-plugins/releases/download/$version
+    curl -fsSL "$base/letsgo-multi_${version#v}_linux_amd64.tar.gz" \
+      | sudo tar -xz -C /usr/local/bin letsgo-multi
+```
+
+## Pinning
+
+A plugin that answers a hook decides what gets built, so it is a build input
+exactly as the compiler is, and `letsgo.mod` pins it by the digest of the
+executable:
+
+```
+plugin archive-layout letsgo-multi v0.1.0 sha256:<binary_sha256 from the release>
+plugin ldflags        letsgo-env    v0.1.0 sha256:<binary_sha256 from the release>
+```
+
+The digest is in `letsgo.json`, published with every release: find the artifact
+for the platform that runs your release and take its `binary_sha256` — the
+digest of the executable inside the archive, not of the archive. letsgo hashes
+the executable before running it and refuses to continue if it is not the one
+pinned.
+
+**`letsgo-cask` is not pinned**, because it answers no hook. It runs after the
+release is over and reads what was published, so it cannot change a byte of it.
+Install it and run it; there is nothing to declare in `letsgo.mod`.
+
+### Not `go install`
+
+The obvious recipe cannot satisfy a pin, and failing mysteriously later would
+be worse than saying so here:
+
 ```sh
-go install github.com/danielriddell21/letsgo-plugins/cmd/letsgo-multi@latest
+go install github.com/danielriddell21/letsgo-plugins/cmd/letsgo-env@v0.1.0  # not for a pinned plugin
 ```
 
-Then pin it, in the repository's `letsgo.mod`:
+`go install` does not pass `-trimpath`, so the build directory is compiled into
+the binary. Two machines with different `GOPATH` values produce different bytes
+from the same source at the same version, so there is no one digest to pin:
 
 ```
-plugin archive-layout letsgo-multi v0.1.0 sha256:<digest of the executable>
+$ GOPATH=/tmp/a go install …/letsgo-env@latest && sha256sum /tmp/a/bin/letsgo-env
+f0877414…
+$ GOPATH=/tmp/b go install …/letsgo-env@latest && sha256sum /tmp/b/bin/letsgo-env
+e3c3c34a…
 ```
 
-letsgo hashes the executable before running it and refuses to continue if it is
-not the one pinned.
+The released binaries are built by letsgo with `-trimpath -buildvcs=false`, so
+their digests are a function of the source and the Go version and nothing else.
+That is what makes them pinnable, and it is the same property the plugins exist
+to protect. `go install` is fine for `letsgo-cask`, which nothing pins.
+
+### One pin, one platform
+
+A `plugin` line carries a single digest, and a plugin binary differs per
+platform, so a pin matches the platform that publishes the release — normally
+`linux/amd64` on CI. That is enough for releasing and for verifying: `letsgo
+verify` replays the answer recorded in `letsgo.json` and never runs a plugin,
+so a release can be checked on a machine that has none of these installed.
+Running `letsgo release` by hand on another platform needs that platform's pin.
+
+[releases]: https://github.com/danielriddell21/letsgo-plugins/releases
 
 ## letsgo-multi
 
