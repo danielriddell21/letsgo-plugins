@@ -84,7 +84,7 @@ func run(args []string, out *os.File) error {
 	output := fs.String("o", "", "write here instead of stdout")
 
 	if err := fs.Parse(permute(fs, args)); err != nil {
-		return err
+		return fmt.Errorf("%s: %w", fs.Name(), err)
 	}
 	if fs.NArg() != 1 {
 		return fmt.Errorf("expected one argument, the path to letsgo.json")
@@ -105,8 +105,10 @@ func run(args []string, out *os.File) error {
 
 	rendered := c.render()
 	if *output == "" {
-		_, err := out.WriteString(rendered)
-		return err
+		if _, err := out.WriteString(rendered); err != nil {
+			return fmt.Errorf("writing the cask: %w", err)
+		}
+		return nil
 	}
 	if err := os.WriteFile(*output, []byte(rendered), 0o600); err != nil {
 		return fmt.Errorf("writing %s: %w", *output, err)

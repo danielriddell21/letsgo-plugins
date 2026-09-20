@@ -63,7 +63,7 @@ func main() {
 }
 
 func inject(in input) (output, error) {
-	injections, err := readConfig(ConfigFile)
+	injections, err := readConfig()
 	if err != nil {
 		return output{}, err
 	}
@@ -112,18 +112,20 @@ func qualify(symbol, module string) (string, error) {
 	return module + "/" + pkg + "." + name, nil
 }
 
-// readConfig parses letsgo-env.mod.
+// readConfig parses ConfigFile.
 //
 // The same line-and-comment shape as letsgo.mod, and no more: this file says
 // which variables to fill from where, and a config format that could say more
 // than that would be a way to smuggle logic into a release.
-func readConfig(path string) ([]injection, error) {
+func readConfig() ([]injection, error) {
+	path := ConfigFile
+
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("%s: no such file; it is where this plugin reads what to inject", path)
 		}
-		return nil, err
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	defer func() { _ = f.Close() }()
 
