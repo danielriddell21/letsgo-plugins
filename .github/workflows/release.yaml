@@ -1,37 +1,14 @@
-name: release
+name: Release
 
 on:
   push:
     tags: ["v*"]
 
-permissions:
-  contents: write
-
 jobs:
   release:
-    name: letsgo
-    runs-on: ubuntu-latest
-    steps:
-      # No fetch-depth: 0. letsgo falls back to the GitHub compare API when the
-      # changelog needs history a shallow clone does not have. fetch-tags is
-      # still needed: the tag being released has to be present for letsgo to
-      # read the version from it.
-      - uses: actions/checkout@v7
-        with:
-          fetch-tags: true
-
-      # The Go version changes the bytes of the binaries, so it is pinned by
-      # go.mod rather than floating on `stable`.
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          check-latest: false
-
-      # Pinned rather than taking the action's default. letsgo decides the
-      # archive layout and the linker flags, so it is a build input: these
-      # binaries are what other repositories pin by digest, and a digest that
-      # moved because the tool moved underneath it is a digest nobody can
-      # account for.
-      - uses: danielriddell21/letsgo-action@v1
-        with:
-          version: v0.5.0
+    uses: danielriddell21/github-actions/.github/workflows/release.yaml@v2
+    permissions:
+      contents: write
+    with:
+      # No tap: the plugins are installed from the release, not brewed.
+      homebrew-tap: false
