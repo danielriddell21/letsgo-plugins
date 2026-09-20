@@ -1,0 +1,84 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - dupl
+    - cyclop
+    - errorlint
+    - gocognit
+    - gocritic
+    - gosec
+    - misspell
+    - nilerr
+    - noctx
+    - prealloc
+    - revive
+    - thelper
+    - unconvert
+    - unparam
+    - whitespace
+    - wrapcheck
+  settings:
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+        - shadow
+    cyclop:
+      max-complexity: 15
+    gocognit:
+      min-complexity: 20
+    revive:
+      rules:
+        - name: exported
+          arguments: [disableStutteringCheck]
+    errcheck:
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+    wrapcheck:
+      # A plugin's errors reach letsgo as a message on stderr, so the text is
+      # the whole interface. Errors raised inside this module already say what
+      # failed; wrapping one again at the call site only lengthens the line the
+      # user reads. Errors crossing in from outside still have to be wrapped.
+      ignore-package-globs:
+        - github.com/danielriddell21/letsgo-plugins/*
+
+    gosec:
+      excludes:
+        - G107
+        - G115
+        - G204
+        - G304
+        - G404
+        - G602
+        - G703
+  exclusions:
+    rules:
+      - path: (^|/)(internal|cmd)/
+        linters:
+          - revive
+      - path: "_test\\.go"
+        linters:
+          - revive
+          - dupl
+          - wrapcheck
+          - gosec
+          - unparam
+          - gocognit
+          - cyclop
+          - prealloc
+          - errcheck
+          - gocritic
+          - noctx
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/danielriddell21/letsgo-plugins

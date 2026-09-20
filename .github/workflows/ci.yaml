@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+    branches: ["trunk"]
+  pull_request:
+
+jobs:
+  ci:
+    uses: danielriddell21/github-actions/.github/workflows/ci.yaml@v1
+    permissions:
+      contents: write
+    with:
+      # Three small programs with no system dependencies and no display, so
+      # the defaults cover everything else.
+      vet: true
+
+      # Off until there is a .gremlins.yaml to run against. These are three
+      # pure functions from JSON to JSON; the tests assert the answers rather
+      # than the code paths, which is what mutation testing would measure.
+      mutate: false
+    secrets:
+      codecov-token: ${{ secrets.CODECOV_TOKEN }}
+      tag-token: ${{ secrets.LETSGO_PLUGINS_TOKEN }}

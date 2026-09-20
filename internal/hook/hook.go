@@ -45,5 +45,8 @@ func run[In, Out any](name string, answer func(In) (Out, error)) error {
 	if err != nil {
 		return err
 	}
-	return json.NewEncoder(os.Stdout).Encode(out)
+	if err := json.NewEncoder(os.Stdout).Encode(out); err != nil {
+		return fmt.Errorf("writing the hook's answer: %w", err)
+	}
+	return nil
 }
