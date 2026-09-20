@@ -17,12 +17,15 @@ import (
 	"github.com/danielriddell21/letsgo-plugins/internal/hook"
 )
 
+// command is one binary the module builds, as letsgo describes it.
+type command struct {
+	Binary  string `json:"binary"`
+	Package string `json:"package"`
+}
+
 type input struct {
-	Project  string `json:"project"`
-	Commands []struct {
-		Binary  string `json:"binary"`
-		Package string `json:"package"`
-	} `json:"commands"`
+	Project  string    `json:"project"`
+	Commands []command `json:"commands"`
 }
 
 type archive struct {
