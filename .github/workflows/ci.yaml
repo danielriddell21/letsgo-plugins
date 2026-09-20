@@ -19,6 +19,12 @@ jobs:
       # pure functions from JSON to JSON; the tests assert the answers rather
       # than the code paths, which is what mutation testing would measure.
       mutate: false
+
+      # Off until this repository has a LETSGO_PLUGINS_TOKEN secret. The job
+      # needs a token that is not the workflow token, because a tag pushed
+      # with GITHUB_TOKEN does not start another workflow — and starting the
+      # release workflow is the entire point of pushing the tag. Until then a
+      # release is tagged by hand.
+      tag: false
     secrets:
       codecov-token: ${{ secrets.CODECOV_TOKEN }}
-      tag-token: ${{ secrets.LETSGO_PLUGINS_TOKEN }}
