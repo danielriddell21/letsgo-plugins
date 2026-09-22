@@ -350,3 +350,35 @@ func TestCaskWithoutATapStillRenders(t *testing.T) {
 		t.Errorf("rendered:\n%s", got)
 	}
 }
+
+// A malformed tap fails before any network call: the owner/repo split is the
+// one thing that can be checked without asking the forge.
+func TestCaskRejectsAMalformedTap(t *testing.T) {
+	err := run([]string{
+		"--repo", "you/gambit", "--variant", "gui",
+		"--tap", "not-a-tap", "--tap-token", "t",
+		manifestFile(t, published),
+	}, os.Stdout)
+	if err == nil || !strings.Contains(err.Error(), "owner/repo") {
+		t.Errorf("err = %v, want one naming owner/repo", err)
+	}
+}
+
+// -o and --tap are independent, so asking for both writes the file and
+// publishes it.
+func TestCaskWritesTheFileAndPublishes(t *testing.T) {
+	ts := &tapServer{}
+	out := filepath.Join(t.TempDir(), "cask.rb")
+	publishCask(t, ts, "-o", out)
+
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `cask "gambit-gui" do`) {
+		t.Errorf("local file:\n%s", data)
+	}
+	if ts.method != http.MethodPut {
+		t.Errorf("method = %q, want PUT: -o must not suppress publishing", ts.method)
+	}
+}

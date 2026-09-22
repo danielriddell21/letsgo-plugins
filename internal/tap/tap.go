@@ -83,6 +83,31 @@ type File struct {
 	Content []byte
 }
 
+// Committer names who a commit is recorded as having made.
+type Committer struct {
+	Name  string `json:"name"`
+	Email string `json:"email"`
+}
+
+// Identity is the author a cask is published under.
+//
+// Fixed rather than taken from the token, and the same identity letsgo stamps
+// on a formula: a tap shared by several projects should have one author per
+// tool, not one per credential. A repository publishing with an App token of
+// its own still leaves an entry that says letsgo published it.
+//
+// This names the letsgo-champ App. The number is the App's bot user id, not its
+// App id: the address GitHub resolves to an account is
+// "<bot user id>+<login>@users.noreply.github.com", and the two are different
+// namespaces — the App id there would look right and link to nothing.
+//
+// It must stay in step with letsgo's internal/brew.Committer, which is the
+// cost of the two publishers not sharing code.
+var Identity = Committer{
+	Name:  "letsgo-champ[bot]",
+	Email: "293666020+letsgo-champ[bot]@users.noreply.github.com",
+}
+
 // FileInput describes a file to write.
 type FileInput struct {
 	Path    string
@@ -92,6 +117,15 @@ type FileInput struct {
 	// SHA is the blob being replaced. Empty creates the file, and the write
 	// then fails if it already exists.
 	SHA string
+
+	// Author records who the commit is attributed to. Nil leaves it to the
+	// forge, which uses the token's own identity.
+	//
+	// No committer is ever sent: GitHub records itself as the committer of a
+	// contents-API commit and signs it, which is what makes these commits
+	// Verified. Supplying one replaces that field and forfeits the signature,
+	// and the author is the field GitHub displays as who made the commit.
+	Author *Committer
 }
 
 // Publish writes content to path in the tap, unless it is already exactly
@@ -115,11 +149,13 @@ func Publish(ctx context.Context, api API, repo Repo, path, message string, cont
 		status, sha = Updated, existing.SHA
 	}
 
+	author := Identity
 	if err := api.WriteFile(ctx, repo, FileInput{
 		Path:    path,
 		Message: message,
 		Content: content,
 		SHA:     sha,
+		Author:  &author,
 	}); err != nil {
 		return "", fmt.Errorf("publishing %s to %s: %w", path, repo, err)
 	}
@@ -181,25 +217,22 @@ func (c *Client) ReadFile(ctx context.Context, repo Repo, path string) (*File, e
 }
 
 // WriteFile creates or replaces a file, as a commit on the default branch.
-//
-// No committer is sent, so the commit is attributed to the identity behind the
-// token. That is the point: an App token commits as its own bot, and an
-// attribution that follows the credential cannot drift from the one that
-// actually did the writing.
 func (c *Client) WriteFile(ctx context.Context, repo Repo, in FileInput) error {
 	body := struct {
-		Message string `json:"message"`
-		Content string `json:"content"`
-		SHA     string `json:"sha,omitempty"`
+		Message string     `json:"message"`
+		Content string     `json:"content"`
+		SHA     string     `json:"sha,omitempty"`
+		Author  *Committer `json:"author,omitempty"`
 	}{
 		Message: in.Message,
 		Content: base64.StdEncoding.EncodeToString(in.Content),
 		SHA:     in.SHA,
+		Author:  in.Author,
 	}
 
 	encoded, err := json.Marshal(body)
 	if err != nil {
-		return err
+		return fmt.Errorf("github: encoding %s: %w", in.Path, err)
 	}
 	return c.do(ctx, http.MethodPut, c.contentsURL(repo, in.Path), encoded, nil)
 }
@@ -246,7 +279,7 @@ func (c *Client) do(ctx context.Context, method, url string, body []byte, out an
 
 	req, err := http.NewRequestWithContext(ctx, method, url, reader)
 	if err != nil {
-		return err
+		return fmt.Errorf("github: %w", err)
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", apiVersion)
@@ -260,13 +293,14 @@ func (c *Client) do(ctx context.Context, method, url string, body []byte, out an
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("github: %s %s: %w", req.Method, req.URL, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
+	// Bounded so a hostile or broken endpoint cannot exhaust memory.
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return err
+		return fmt.Errorf("github: reading response: %w", err)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
@@ -280,5 +314,8 @@ func (c *Client) do(ctx context.Context, method, url string, body []byte, out an
 	if out == nil {
 		return nil
 	}
-	return json.Unmarshal(data, out)
+	if err := json.Unmarshal(data, out); err != nil {
+		return fmt.Errorf("github: parsing response from %s: %w", req.URL, err)
+	}
+	return nil
 }
