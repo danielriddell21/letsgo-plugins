@@ -1,6 +1,10 @@
 package main
 
 import (
+	"encoding/base64"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -182,5 +186,167 @@ func TestCaskOmitsEmptyCaveats(t *testing.T) {
 
 	if strings.Contains(got, "caveats") {
 		t.Errorf("no caveats means no stanza:\n%s", got)
+	}
+}
+
+// tapServer answers the two contents calls publishing makes, recording the
+// write. existing is the file already in the tap, or "" for none.
+type tapServer struct {
+	existing string
+
+	path    string
+	method  string
+	auth    string
+	message string
+	sha     string
+	content string
+}
+
+func (ts *tapServer) start(t *testing.T) string {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ts.path, ts.auth = r.URL.Path, r.Header.Get("Authorization")
+		if r.Method == http.MethodGet {
+			if ts.existing == "" {
+				w.WriteHeader(http.StatusNotFound)
+				_ = json.NewEncoder(w).Encode(map[string]string{"message": "Not Found"})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"sha":      "existing-sha",
+				"encoding": "base64",
+				"content":  base64.StdEncoding.EncodeToString([]byte(ts.existing)),
+			})
+			return
+		}
+
+		ts.method = r.Method
+		var body struct {
+			Message string `json:"message"`
+			Content string `json:"content"`
+			SHA     string `json:"sha"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(body.Content)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ts.message, ts.sha, ts.content = body.Message, body.SHA, string(decoded)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(server.Close)
+	return server.URL
+}
+
+func publishCask(t *testing.T, ts *tapServer, args ...string) {
+	t.Helper()
+	full := append(args,
+		"--repo", "you/gambit", "--variant", "gui",
+		"--tap", "you/tap", "--tap-token", "tap-token", "--tap-api", ts.start(t),
+		manifestFile(t, published))
+	if err := run(full, os.Stdout); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The whole point of #22: the cask reaches the tap without a checkout and
+// without a shell commit.
+func TestCaskPublishesToTheTap(t *testing.T) {
+	ts := &tapServer{}
+	publishCask(t, ts)
+
+	if want := "/repos/you/homebrew-tap/contents/Casks/gambit-gui.rb"; ts.path != want {
+		t.Errorf("path = %q, want %q", ts.path, want)
+	}
+	if ts.method != http.MethodPut {
+		t.Errorf("method = %q, want PUT", ts.method)
+	}
+	if ts.auth != "Bearer tap-token" {
+		t.Errorf("Authorization = %q", ts.auth)
+	}
+	if ts.sha != "" {
+		t.Errorf("SHA = %q, want empty for a file that was not there", ts.sha)
+	}
+	// Matches the formula's message, so a tap's history reads the same way
+	// whichever letsgo wrote the entry.
+	if want := "gambit-gui 1.4.0"; ts.message != want {
+		t.Errorf("message = %q, want %q", ts.message, want)
+	}
+	if !strings.Contains(ts.content, `cask "gambit-gui" do`) {
+		t.Errorf("published:\n%s", ts.content)
+	}
+}
+
+// The conditional write: replacing a file carries the SHA that was read, so a
+// racing change fails the write rather than being clobbered by it.
+func TestCaskReplacesWithTheSHAItRead(t *testing.T) {
+	ts := &tapServer{existing: "# an older cask\n"}
+	publishCask(t, ts)
+
+	if ts.sha != "existing-sha" {
+		t.Errorf("SHA = %q, want existing-sha", ts.sha)
+	}
+}
+
+// Re-running a release must not leave a commit in somebody else's repository
+// saying nothing happened.
+func TestCaskDoesNotRepublishAnIdenticalFile(t *testing.T) {
+	rendered := generate(t, "--repo", "you/gambit", "--variant", "gui", manifestFile(t, published))
+
+	ts := &tapServer{existing: rendered}
+	publishCask(t, ts)
+
+	if ts.method != "" {
+		t.Errorf("wrote %q, want no write at all", ts.method)
+	}
+}
+
+func TestCaskPathCanBeOverridden(t *testing.T) {
+	ts := &tapServer{}
+	publishCask(t, ts, "--tap-path", "Casks/g/gambit-gui.rb")
+
+	if want := "/repos/you/homebrew-tap/contents/Casks/g/gambit-gui.rb"; ts.path != want {
+		t.Errorf("path = %q, want %q", ts.path, want)
+	}
+}
+
+func TestCaskRefusesToPublishWithoutAToken(t *testing.T) {
+	t.Setenv(tapTokenEnv, "")
+
+	err := run([]string{
+		"--repo", "you/gambit", "--variant", "gui", "--tap", "you/tap",
+		manifestFile(t, published),
+	}, os.Stdout)
+	if err == nil || !strings.Contains(err.Error(), tapTokenEnv) {
+		t.Errorf("err = %v, want one naming %s", err, tapTokenEnv)
+	}
+}
+
+// The token comes from the environment when the flag is absent, spelled the
+// same way letsgo spells it.
+func TestCaskReadsTheTokenFromTheEnvironment(t *testing.T) {
+	ts := &tapServer{}
+	t.Setenv(tapTokenEnv, "from-env")
+
+	err := run([]string{
+		"--repo", "you/gambit", "--variant", "gui", "--tap", "you/tap",
+		"--tap-api", ts.start(t), manifestFile(t, published),
+	}, os.Stdout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ts.auth != "Bearer from-env" {
+		t.Errorf("Authorization = %q", ts.auth)
+	}
+}
+
+// Rendering to stdout stays the default, so the renderer is still usable on
+// its own for inspection.
+func TestCaskWithoutATapStillRenders(t *testing.T) {
+	got := generate(t, "--repo", "you/gambit", "--variant", "gui", manifestFile(t, published))
+	if !strings.Contains(got, `cask "gambit-gui" do`) {
+		t.Errorf("rendered:\n%s", got)
 	}
 }
