@@ -1,11 +1,15 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/danielriddell21/letsgo/plugin"
+)
 
 func TestLayoutPutsEveryCommandInOneArchive(t *testing.T) {
-	in := input{
+	in := plugin.ArchiveLayoutInput{
 		Project: "toolshed",
-		Commands: []command{
+		Commands: []plugin.InputCommand{
 			{Binary: "chip", Package: "./cmd/chip"},
 			{Binary: "plane", Package: "./cmd/plane"},
 		},
@@ -29,13 +33,13 @@ func TestLayoutPutsEveryCommandInOneArchive(t *testing.T) {
 }
 
 func TestLayoutRefusesAModuleWithNoCommands(t *testing.T) {
-	if _, err := layout(input{Project: "toolshed"}); err == nil {
+	if _, err := layout(plugin.ArchiveLayoutInput{Project: "toolshed"}); err == nil {
 		t.Error("a module that builds nothing has no layout to describe")
 	}
 }
 
 func TestLayoutRefusesAReleaseWithNoProjectName(t *testing.T) {
-	in := input{Commands: []command{{Binary: "chip", Package: "./cmd/chip"}}}
+	in := plugin.ArchiveLayoutInput{Commands: []plugin.InputCommand{{Binary: "chip", Package: "./cmd/chip"}}}
 	if _, err := layout(in); err == nil {
 		t.Error("the archive is named after the project, so it needs one")
 	}

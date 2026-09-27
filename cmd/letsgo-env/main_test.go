@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/danielriddell21/letsgo/plugin"
 )
 
 // writeConfig puts a letsgo-env.mod in a temporary directory and makes it the
@@ -23,7 +25,7 @@ func TestInjectQualifiesModuleRelativeSymbols(t *testing.T) {
 	writeConfig(t, "inject internal/telemetry.otelEndpoint OTEL_ENDPOINT\n")
 	t.Setenv("OTEL_ENDPOINT", "https://otel.example")
 
-	out, err := inject(input{Module: "github.com/danielriddell21/unum"})
+	out, err := inject(plugin.LDFlagsInput{Module: "github.com/danielriddell21/unum"})
 	if err != nil {
 		t.Fatalf("inject: %v", err)
 	}
@@ -38,7 +40,7 @@ func TestInjectLeavesAFullyQualifiedSymbolAlone(t *testing.T) {
 	writeConfig(t, "inject github.com/danielriddell21/unum/internal/build.Channel CHANNEL\n")
 	t.Setenv("CHANNEL", "edge")
 
-	out, err := inject(input{Module: "github.com/danielriddell21/unum"})
+	out, err := inject(plugin.LDFlagsInput{Module: "github.com/danielriddell21/unum"})
 	if err != nil {
 		t.Fatalf("inject: %v", err)
 	}
@@ -52,7 +54,7 @@ func TestInjectLeavesAFullyQualifiedSymbolAlone(t *testing.T) {
 func TestInjectFailsOnAnUnsetVariable(t *testing.T) {
 	writeConfig(t, "inject internal/telemetry.otelEndpoint OTEL_ENDPOINT\n")
 
-	_, err := inject(input{Module: "example.com/m"})
+	_, err := inject(plugin.LDFlagsInput{Module: "example.com/m"})
 	if err == nil {
 		t.Fatal("an unset variable must fail the release")
 	}
@@ -64,7 +66,7 @@ func TestInjectFailsOnAnUnsetVariable(t *testing.T) {
 func TestInjectReportsEveryUnsetVariableAtOnce(t *testing.T) {
 	writeConfig(t, "inject pkg.A FIRST\ninject pkg.B SECOND\n")
 
-	_, err := inject(input{Module: "example.com/m"})
+	_, err := inject(plugin.LDFlagsInput{Module: "example.com/m"})
 	if err == nil {
 		t.Fatal("expected a failure")
 	}
@@ -79,7 +81,7 @@ func TestInjectAcceptsAnEmptyValueThatIsSet(t *testing.T) {
 	writeConfig(t, "inject pkg.A OPTIONAL\n")
 	t.Setenv("OPTIONAL", "")
 
-	out, err := inject(input{Module: "example.com/m"})
+	out, err := inject(plugin.LDFlagsInput{Module: "example.com/m"})
 	if err != nil {
 		t.Fatalf("set-but-empty is a choice, not an omission: %v", err)
 	}

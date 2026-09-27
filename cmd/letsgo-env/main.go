@@ -36,20 +36,12 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/danielriddell21/letsgo-plugins/internal/hook"
+	"github.com/danielriddell21/letsgo/plugin"
 )
 
 // ConfigFile is read from the repository root, which is where letsgo runs a
 // plugin from.
 const ConfigFile = "letsgo-env.mod"
-
-type input struct {
-	Module string `json:"module"`
-}
-
-type output struct {
-	LDFlags []string `json:"ldflags"`
-}
 
 // injection is one variable to fill from one environment variable.
 type injection struct {
@@ -59,20 +51,20 @@ type injection struct {
 }
 
 func main() {
-	hook.Main("ldflags", inject)
+	plugin.Main(plugin.HookLDFlags, inject)
 }
 
-func inject(in input) (output, error) {
+func inject(in plugin.LDFlagsInput) (plugin.LDFlagsOutput, error) {
 	injections, err := readConfig()
 	if err != nil {
-		return output{}, err
+		return plugin.LDFlagsOutput{}, err
 	}
 	if len(injections) == 0 {
-		return output{}, nil
+		return plugin.LDFlagsOutput{}, nil
 	}
 
 	var missing []string
-	out := output{}
+	out := plugin.LDFlagsOutput{}
 
 	for _, want := range injections {
 		value, ok := os.LookupEnv(want.EnvVar)
@@ -83,7 +75,7 @@ func inject(in input) (output, error) {
 
 		symbol, err := qualify(want.Symbol, in.Module)
 		if err != nil {
-			return output{}, fmt.Errorf("%s:%d: %w", ConfigFile, want.Line, err)
+			return plugin.LDFlagsOutput{}, fmt.Errorf("%s:%d: %w", ConfigFile, want.Line, err)
 		}
 		out.LDFlags = append(out.LDFlags, "-X", symbol+"="+value)
 	}
@@ -92,7 +84,7 @@ func inject(in input) (output, error) {
 	// empty strings produces binaries that are wrong in a way nothing checks.
 	if len(missing) > 0 {
 		sort.Strings(missing)
-		return output{}, fmt.Errorf("%s is not set in the environment",
+		return plugin.LDFlagsOutput{}, fmt.Errorf("%s is not set in the environment",
 			strings.Join(missing, ", "))
 	}
 	return out, nil

@@ -14,48 +14,28 @@ package main
 import (
 	"fmt"
 
-	"github.com/danielriddell21/letsgo-plugins/internal/hook"
+	"github.com/danielriddell21/letsgo/plugin"
 )
 
-// command is one binary the module builds, as letsgo describes it.
-type command struct {
-	Binary  string `json:"binary"`
-	Package string `json:"package"`
-}
-
-type input struct {
-	Project  string    `json:"project"`
-	Commands []command `json:"commands"`
-}
-
-type archive struct {
-	Name     string   `json:"name"`
-	Binaries []string `json:"binaries"`
-}
-
-type output struct {
-	Archives []archive `json:"archives"`
-}
-
 func main() {
-	hook.Main("archive-layout", layout)
+	plugin.Main(plugin.HookArchiveLayout, layout)
 }
 
-func layout(in input) (output, error) {
+func layout(in plugin.ArchiveLayoutInput) (plugin.ArchiveLayoutOutput, error) {
 	if len(in.Commands) == 0 {
-		return output{}, fmt.Errorf("the module builds no commands")
+		return plugin.ArchiveLayoutOutput{}, fmt.Errorf("the module builds no commands")
 	}
 	if in.Project == "" {
-		return output{}, fmt.Errorf("the release has no project name to call the archive")
+		return plugin.ArchiveLayoutOutput{}, fmt.Errorf("the release has no project name to call the archive")
 	}
 
 	// Named after the project, because that is what the collection is called.
 	// letsgo checks the answer covers every command exactly once, so there is
 	// nothing to validate here beyond having something to say.
-	all := archive{Name: in.Project}
+	all := plugin.OutputArchive{Name: in.Project}
 	for _, cmd := range in.Commands {
 		all.Binaries = append(all.Binaries, cmd.Binary)
 	}
 
-	return output{Archives: []archive{all}}, nil
+	return plugin.ArchiveLayoutOutput{Archives: []plugin.OutputArchive{all}}, nil
 }
