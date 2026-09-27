@@ -1,14 +1,12 @@
 package main
 
 import (
-	"encoding/base64"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/danielriddell21/letsgo/plugin"
 )
 
 const published = `{
@@ -189,161 +187,7 @@ func TestCaskOmitsEmptyCaveats(t *testing.T) {
 	}
 }
 
-// tapServer answers the two contents calls publishing makes, recording the
-// write. existing is the file already in the tap, or "" for none.
-type tapServer struct {
-	existing string
-
-	path    string
-	method  string
-	auth    string
-	message string
-	sha     string
-	content string
-}
-
-func (ts *tapServer) start(t *testing.T) string {
-	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ts.path, ts.auth = r.URL.Path, r.Header.Get("Authorization")
-		if r.Method == http.MethodGet {
-			if ts.existing == "" {
-				w.WriteHeader(http.StatusNotFound)
-				_ = json.NewEncoder(w).Encode(map[string]string{"message": "Not Found"})
-				return
-			}
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"sha":      "existing-sha",
-				"encoding": "base64",
-				"content":  base64.StdEncoding.EncodeToString([]byte(ts.existing)),
-			})
-			return
-		}
-
-		ts.method = r.Method
-		var body struct {
-			Message string `json:"message"`
-			Content string `json:"content"`
-			SHA     string `json:"sha"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatal(err)
-		}
-		decoded, err := base64.StdEncoding.DecodeString(body.Content)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ts.message, ts.sha, ts.content = body.Message, body.SHA, string(decoded)
-		_, _ = w.Write([]byte(`{}`))
-	}))
-	t.Cleanup(server.Close)
-	return server.URL
-}
-
-func publishCask(t *testing.T, ts *tapServer, args ...string) {
-	t.Helper()
-	full := append(args,
-		"--repo", "you/gambit", "--variant", "gui",
-		"--tap", "you/tap", "--tap-token", "tap-token", "--tap-api", ts.start(t),
-		manifestFile(t, published))
-	if err := run(full, os.Stdout); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// The whole point of #22: the cask reaches the tap without a checkout and
-// without a shell commit.
-func TestCaskPublishesToTheTap(t *testing.T) {
-	ts := &tapServer{}
-	publishCask(t, ts)
-
-	if want := "/repos/you/homebrew-tap/contents/Casks/gambit-gui.rb"; ts.path != want {
-		t.Errorf("path = %q, want %q", ts.path, want)
-	}
-	if ts.method != http.MethodPut {
-		t.Errorf("method = %q, want PUT", ts.method)
-	}
-	if ts.auth != "Bearer tap-token" {
-		t.Errorf("Authorization = %q", ts.auth)
-	}
-	if ts.sha != "" {
-		t.Errorf("SHA = %q, want empty for a file that was not there", ts.sha)
-	}
-	// Matches the formula's message, so a tap's history reads the same way
-	// whichever letsgo wrote the entry.
-	if want := "gambit-gui 1.4.0"; ts.message != want {
-		t.Errorf("message = %q, want %q", ts.message, want)
-	}
-	if !strings.Contains(ts.content, `cask "gambit-gui" do`) {
-		t.Errorf("published:\n%s", ts.content)
-	}
-}
-
-// The conditional write: replacing a file carries the SHA that was read, so a
-// racing change fails the write rather than being clobbered by it.
-func TestCaskReplacesWithTheSHAItRead(t *testing.T) {
-	ts := &tapServer{existing: "# an older cask\n"}
-	publishCask(t, ts)
-
-	if ts.sha != "existing-sha" {
-		t.Errorf("SHA = %q, want existing-sha", ts.sha)
-	}
-}
-
-// Re-running a release must not leave a commit in somebody else's repository
-// saying nothing happened.
-func TestCaskDoesNotRepublishAnIdenticalFile(t *testing.T) {
-	rendered := generate(t, "--repo", "you/gambit", "--variant", "gui", manifestFile(t, published))
-
-	ts := &tapServer{existing: rendered}
-	publishCask(t, ts)
-
-	if ts.method != "" {
-		t.Errorf("wrote %q, want no write at all", ts.method)
-	}
-}
-
-func TestCaskPathCanBeOverridden(t *testing.T) {
-	ts := &tapServer{}
-	publishCask(t, ts, "--tap-path", "Casks/g/gambit-gui.rb")
-
-	if want := "/repos/you/homebrew-tap/contents/Casks/g/gambit-gui.rb"; ts.path != want {
-		t.Errorf("path = %q, want %q", ts.path, want)
-	}
-}
-
-func TestCaskRefusesToPublishWithoutAToken(t *testing.T) {
-	t.Setenv(tapTokenEnv, "")
-
-	err := run([]string{
-		"--repo", "you/gambit", "--variant", "gui", "--tap", "you/tap",
-		manifestFile(t, published),
-	}, os.Stdout)
-	if err == nil || !strings.Contains(err.Error(), tapTokenEnv) {
-		t.Errorf("err = %v, want one naming %s", err, tapTokenEnv)
-	}
-}
-
-// The token comes from the environment when the flag is absent, spelled the
-// same way letsgo spells it.
-func TestCaskReadsTheTokenFromTheEnvironment(t *testing.T) {
-	ts := &tapServer{}
-	t.Setenv(tapTokenEnv, "from-env")
-
-	err := run([]string{
-		"--repo", "you/gambit", "--variant", "gui", "--tap", "you/tap",
-		"--tap-api", ts.start(t), manifestFile(t, published),
-	}, os.Stdout)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ts.auth != "Bearer from-env" {
-		t.Errorf("Authorization = %q", ts.auth)
-	}
-}
-
-// Rendering to stdout stays the default, so the renderer is still usable on
-// its own for inspection.
+// A malformed tap is no longer this program's problem: it never sees one.
 func TestCaskWithoutATapStillRenders(t *testing.T) {
 	got := generate(t, "--repo", "you/gambit", "--variant", "gui", manifestFile(t, published))
 	if !strings.Contains(got, `cask "gambit-gui" do`) {
@@ -351,34 +195,128 @@ func TestCaskWithoutATapStillRenders(t *testing.T) {
 	}
 }
 
-// A malformed tap fails before any network call: the owner/repo split is the
-// one thing that can be checked without asking the forge.
-func TestCaskRejectsAMalformedTap(t *testing.T) {
-	err := run([]string{
-		"--repo", "you/gambit", "--variant", "gui",
-		"--tap", "not-a-tap", "--tap-token", "t",
-		manifestFile(t, published),
-	}, os.Stdout)
-	if err == nil || !strings.Contains(err.Error(), "owner/repo") {
-		t.Errorf("err = %v, want one naming owner/repo", err)
+// The hook path: every digest and URL already comes from core, so the
+// release's own archives and a variant's are told apart by Variant alone,
+// never by re-parsing the archive's name.
+func TestAnswerTapFilesRendersTheVariantsArchives(t *testing.T) {
+	in := plugin.TapFilesInput{
+		Project: "gambit", Version: "1.4.0", Tag: "v1.4.0",
+		Description: "a gambit", License: "MIT", Homepage: "https://example.com/gambit",
+		Artifacts: []plugin.TapArtifact{
+			{
+				Archive: "gambit_1.4.0_darwin_arm64.tar.gz", OS: "darwin", Arch: "arm64",
+				SHA256: "base-arm", URL: "https://dl.example.com/gambit_1.4.0_darwin_arm64.tar.gz",
+				Binaries: []string{"gambit"},
+			},
+			{
+				Archive: "gambit-gui_1.4.0_darwin_arm64.tar.gz", Variant: "gui", OS: "darwin", Arch: "arm64",
+				SHA256: "gui-arm", URL: "https://dl.example.com/gambit-gui_1.4.0_darwin_arm64.tar.gz",
+				Binaries: []string{"gambit-gui"},
+			},
+		},
 	}
-}
 
-// -o and --tap are independent, so asking for both writes the file and
-// publishes it.
-func TestCaskWritesTheFileAndPublishes(t *testing.T) {
-	ts := &tapServer{}
-	out := filepath.Join(t.TempDir(), "cask.rb")
-	publishCask(t, ts, "-o", out)
-
-	data, err := os.ReadFile(out)
+	out, err := answerTapFiles(in)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), `cask "gambit-gui" do`) {
-		t.Errorf("local file:\n%s", data)
+	if len(out.Files) != 1 || out.Files[0].Path != "Casks/gambit.rb" {
+		t.Fatalf("files = %+v", out.Files)
 	}
-	if ts.method != http.MethodPut {
-		t.Errorf("method = %q, want PUT: -o must not suppress publishing", ts.method)
+
+	rendered := out.Files[0].Content
+	for _, want := range []string{
+		`cask "gambit" do`, `sha256 "base-arm"`, `desc "a gambit"`,
+		`license "MIT"`, `homepage "https://example.com/gambit"`, `binary "gambit"`,
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("rendered cask is missing %q:\n%s", want, rendered)
+		}
+	}
+	if strings.Contains(rendered, "gui-arm") {
+		t.Errorf("the release's own cask installed the variant's archive:\n%s", rendered)
+	}
+}
+
+func TestAnswerTapFilesUsesTheConfiguredVariantAndToken(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile("letsgo-cask.mod", []byte("variant gui\ntoken gambit\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	in := plugin.TapFilesInput{
+		Project: "gambit", Version: "1.4.0",
+		Artifacts: []plugin.TapArtifact{
+			{
+				Archive: "gambit-gui_1.4.0_darwin_arm64.tar.gz", Variant: "gui", OS: "darwin", Arch: "arm64",
+				SHA256: "gui-arm", URL: "https://dl.example.com/gambit-gui_1.4.0_darwin_arm64.tar.gz",
+				Binaries: []string{"gambit-gui"},
+			},
+		},
+	}
+
+	out, err := answerTapFiles(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Files) != 1 || out.Files[0].Path != "Casks/gambit.rb" {
+		t.Fatalf("files = %+v, want Casks/gambit.rb", out.Files)
+	}
+}
+
+func TestAnswerTapFilesRefusesWhatItCannotBuild(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	_, err := answerTapFiles(plugin.TapFilesInput{Project: "gambit", Version: "1.4.0"})
+	if err == nil || !strings.Contains(err.Error(), "no macOS build") {
+		t.Errorf("err = %v, want a refusal naming the missing macOS build", err)
+	}
+}
+
+func TestReadPluginConfigParsesVariantAndToken(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile("letsgo-cask.mod", []byte("// a comment\nvariant gui\ntoken gambit\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := readPluginConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Variant != "gui" || cfg.Token != "gambit" {
+		t.Errorf("cfg = %+v", cfg)
+	}
+}
+
+// No letsgo-cask.mod at all is a normal thing for a release with one darwin
+// build and no variant, and must not fail.
+func TestReadPluginConfigToleratesNoFile(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	cfg, err := readPluginConfig()
+	if err != nil || cfg != (pluginConfig{}) {
+		t.Errorf("readPluginConfig() = %+v, %v, want a zero config and no error", cfg, err)
+	}
+}
+
+func TestReadPluginConfigRejectsAnUnknownDirective(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile("letsgo-cask.mod", []byte("colour blue\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := readPluginConfig(); err == nil || !strings.Contains(err.Error(), "colour") {
+		t.Errorf("err = %v, want one naming the unknown directive", err)
+	}
+}
+
+func TestReadPluginConfigRejectsADuplicateDirective(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile("letsgo-cask.mod", []byte("variant gui\nvariant pro\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := readPluginConfig(); err == nil || !strings.Contains(err.Error(), "already set") {
+		t.Errorf("err = %v, want one naming the repeated directive", err)
 	}
 }

@@ -7,7 +7,7 @@ some repositories need at release time and most do not.
 | --- | --- | --- |
 | `letsgo-multi` | `archive-layout` | ships every command in one archive per target, and one formula that installs them all |
 | `letsgo-env` | `ldflags` | compiles values from the environment into the binary |
-| `letsgo-cask` | none — reads the published release | writes a Homebrew cask for a macOS build, and publishes it to a tap |
+| `letsgo-cask` | `tap-files` | writes a Homebrew cask for a macOS build, alongside the formula |
 
 ```sh
 letsgo plugin install letsgo-multi@v0.2.0
