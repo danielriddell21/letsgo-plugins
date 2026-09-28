@@ -133,6 +133,29 @@ func TestReadConfigSaysWhereItLooked(t *testing.T) {
 	}
 }
 
+// .letsgo/env.mod is preferred over a legacy letsgo-env.mod when both exist,
+// since that is where letsgo's own config-dir convention now points.
+func TestReadConfigPrefersTheModernLocation(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.MkdirAll(".letsgo", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(".letsgo/env.mod", []byte("inject pkg.A MODERN\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ConfigFile, []byte("inject pkg.A LEGACY\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := readConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].EnvVar != "MODERN" {
+		t.Errorf("got %+v, want the modern file's directive", got)
+	}
+}
+
 func TestQualifyNeedsAPackageAndAVariable(t *testing.T) {
 	for _, symbol := range []string{"bare", ".leading", "trailing."} {
 		if _, err := qualify(symbol, "example.com/m"); err == nil {

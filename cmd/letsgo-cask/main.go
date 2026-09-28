@@ -15,7 +15,8 @@
 // split as the formula; this process never sees a token.
 //
 // Which variant the cask installs, and what token it is published under,
-// live in letsgo-cask.mod, beside letsgo.mod:
+// live in .letsgo/cask.mod. A legacy letsgo-cask.mod beside letsgo.mod is
+// still read if .letsgo/cask.mod does not exist:
 //
 //	variant gui
 //	token gambit
@@ -60,11 +61,16 @@ func main() {
 	}
 }
 
-// PluginConfigFile is read from the repository root, which is where letsgo
-// runs a plugin from. Everything else the cask needs — description, licence,
+// PluginConfigFile is the legacy location, read from the repository root,
+// which is where letsgo runs a plugin from. modernConfigFile is preferred
+// when present. Everything else the cask needs — description, licence,
 // homepage, caveats, and every artifact's digest and URL — comes from the
 // hook's input instead.
 const PluginConfigFile = "letsgo-cask.mod"
+
+// modernConfigFile is where this plugin's config lives once a repository has
+// moved to letsgo's .letsgo/ convention (config dirs, PBS CD-6/CD-7).
+const modernConfigFile = ".letsgo/cask.mod"
 
 // pluginConfig is letsgo-cask.mod, decoded.
 type pluginConfig struct {
@@ -89,15 +95,25 @@ func answerTapFiles(in plugin.TapFilesInput) (plugin.TapFilesOutput, error) {
 	}}, nil
 }
 
-// readPluginConfig parses PluginConfigFile. Missing is not an error: a
-// release with one darwin build and no variant needs neither directive.
+// readPluginConfig parses the plugin's own config, preferring
+// modernConfigFile and falling back to the legacy PluginConfigFile. Missing
+// entirely is not an error: a release with one darwin build and no variant
+// needs neither directive.
 func readPluginConfig() (pluginConfig, error) {
-	data, err := os.ReadFile(PluginConfigFile)
+	path := modernConfigFile
+	data, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return pluginConfig{}, nil
+		if !os.IsNotExist(err) {
+			return pluginConfig{}, fmt.Errorf("%s: %w", path, err)
 		}
-		return pluginConfig{}, fmt.Errorf("%s: %w", PluginConfigFile, err)
+		path = PluginConfigFile
+		data, err = os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return pluginConfig{}, nil
+			}
+			return pluginConfig{}, fmt.Errorf("%s: %w", path, err)
+		}
 	}
 
 	var cfg pluginConfig
@@ -116,12 +132,12 @@ func readPluginConfig() (pluginConfig, error) {
 		fields := strings.Fields(text)
 		if len(fields) != 2 {
 			return pluginConfig{}, fmt.Errorf("%s:%d: expected `variant <name>` or `token <name>`, got %q",
-				PluginConfigFile, line, text)
+				path, line, text)
 		}
 
 		directive, value := fields[0], fields[1]
 		if seen[directive] {
-			return pluginConfig{}, fmt.Errorf("%s:%d: %s is already set", PluginConfigFile, line, directive)
+			return pluginConfig{}, fmt.Errorf("%s:%d: %s is already set", path, line, directive)
 		}
 		seen[directive] = true
 
@@ -131,11 +147,11 @@ func readPluginConfig() (pluginConfig, error) {
 		case "token":
 			cfg.Token = value
 		default:
-			return pluginConfig{}, fmt.Errorf("%s:%d: unknown directive %q", PluginConfigFile, line, directive)
+			return pluginConfig{}, fmt.Errorf("%s:%d: unknown directive %q", path, line, directive)
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return pluginConfig{}, fmt.Errorf("%s: %w", PluginConfigFile, err)
+		return pluginConfig{}, fmt.Errorf("%s: %w", path, err)
 	}
 	return cfg, nil
 }

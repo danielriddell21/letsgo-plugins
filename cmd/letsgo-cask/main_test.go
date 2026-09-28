@@ -320,3 +320,26 @@ func TestReadPluginConfigRejectsADuplicateDirective(t *testing.T) {
 		t.Errorf("err = %v, want one naming the repeated directive", err)
 	}
 }
+
+// .letsgo/cask.mod is preferred over a legacy letsgo-cask.mod when both
+// exist, since that is where letsgo's own config-dir convention now points.
+func TestReadPluginConfigPrefersTheModernLocation(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.MkdirAll(".letsgo", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(".letsgo/cask.mod", []byte("variant gui\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile("letsgo-cask.mod", []byte("variant pro\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := readPluginConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Variant != "gui" {
+		t.Errorf("cfg = %+v, want the modern file's variant", cfg)
+	}
+}

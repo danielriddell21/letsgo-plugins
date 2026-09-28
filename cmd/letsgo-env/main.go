@@ -17,8 +17,9 @@
 //
 // # Configuration
 //
-// letsgo.mod pins the plugin; what to inject lives beside it in
-// letsgo-env.mod, so that letsgo's own directives stay a closed set:
+// letsgo.mod pins the plugin; what to inject lives in .letsgo/env.mod, so
+// that letsgo's own directives stay a closed set. A legacy letsgo-env.mod
+// beside letsgo.mod is still read if .letsgo/env.mod does not exist.
 //
 //	inject internal/telemetry.otelEndpoint  OTEL_ENDPOINT
 //	inject internal/telemetry.otelAuthToken OTEL_AUTH_TOKEN
@@ -39,9 +40,13 @@ import (
 	"github.com/danielriddell21/letsgo/plugin"
 )
 
-// ConfigFile is read from the repository root, which is where letsgo runs a
-// plugin from.
+// ConfigFile is the legacy location, read from the repository root, which is
+// where letsgo runs a plugin from. modernConfigFile is preferred when present.
 const ConfigFile = "letsgo-env.mod"
+
+// modernConfigFile is where this plugin's config lives once a repository has
+// moved to letsgo's .letsgo/ convention (config dirs, PBS CD-6/CD-7).
+const modernConfigFile = ".letsgo/env.mod"
 
 // injection is one variable to fill from one environment variable.
 type injection struct {
@@ -104,15 +109,23 @@ func qualify(symbol, module string) (string, error) {
 	return module + "/" + pkg + "." + name, nil
 }
 
-// readConfig parses ConfigFile.
+// readConfig parses the plugin's own config, preferring modernConfigFile and
+// falling back to the legacy ConfigFile if that does not exist.
 //
 // The same line-and-comment shape as letsgo.mod, and no more: this file says
 // which variables to fill from where, and a config format that could say more
 // than that would be a way to smuggle logic into a release.
 func readConfig() ([]injection, error) {
-	path := ConfigFile
+	path := modernConfigFile
 
 	f, err := os.Open(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+		path = ConfigFile
+		f, err = os.Open(path)
+	}
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("%s: no such file; it is where this plugin reads what to inject", path)
