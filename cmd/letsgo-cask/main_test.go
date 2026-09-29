@@ -299,6 +299,17 @@ func TestReadPluginConfigToleratesNoFile(t *testing.T) {
 	}
 }
 
+func TestReadPluginConfigRejectsAMalformedLine(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile("letsgo-cask.mod", []byte("variant\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := readPluginConfig(); err == nil {
+		t.Error("a line missing its value should not silently parse")
+	}
+}
+
 func TestReadPluginConfigRejectsAnUnknownDirective(t *testing.T) {
 	t.Chdir(t.TempDir())
 	if err := os.WriteFile("letsgo-cask.mod", []byte("colour blue\n"), 0o600); err != nil {
