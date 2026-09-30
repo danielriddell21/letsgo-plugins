@@ -1,2 +1,4 @@
-github.com/danielriddell21/letsgo v0.16.0 h1:7ravtVuo4S5h+j4XOt+wYtMufYs4I6q/3QciRAaTu8I=
-github.com/danielriddell21/letsgo v0.16.0/go.mod h1:RfIsOQB85enM0fU5NMiO6U2Ug0Ga82tYotGXpa0LnMc=
+github.com/danielriddell21/letsgo v0.35.0-rc.4 h1:dqoegR5cCUOmofW0+Qc3o/FOgxyPoM553ZXrvgTuYfU=
+github.com/danielriddell21/letsgo v0.35.0-rc.4/go.mod h1:RfIsOQB85enM0fU5NMiO6U2Ug0Ga82tYotGXpa0LnMc=
+github.com/danielriddell21/unum v1.9.2 h1:Tvpc3POEIAk1ASzRQNdX2P7SPknVies9h6VPopxM5CM=
+github.com/danielriddell21/unum v1.9.2/go.mod h1:rxSIHZKH0iW5MM9xUnHmW91WgrXt4fDz55xNgXSezL0=
