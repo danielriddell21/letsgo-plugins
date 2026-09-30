@@ -354,3 +354,15 @@ func TestReadPluginConfigPrefersTheModernLocation(t *testing.T) {
 		t.Errorf("cfg = %+v, want the modern file's variant", cfg)
 	}
 }
+
+// A nested module's tag carries its directory; the download URL keeps the
+// slashes, which is how the forge names such a release.
+func TestCaskKeepsAScopedTagInTheDownloadURL(t *testing.T) {
+	scoped := strings.Replace(published, `"tag": "v1.4.0"`, `"tag": "services/api/v1.4.0"`, 1)
+	got := generate(t, "--repo", "you/gambit", manifestFile(t, scoped))
+
+	want := "https://github.com/you/gambit/releases/download/services/api/v1.4.0/gambit_1.4.0_darwin_arm64.tar.gz"
+	if !strings.Contains(got, want) {
+		t.Errorf("the cask is missing %q:\n%s", want, got)
+	}
+}
