@@ -97,7 +97,7 @@ func readPluginConfig(configDir string) (pluginConfig, error) {
 		return pluginConfig{}, nil
 	}
 	if err != nil {
-		return pluginConfig{}, err
+		return pluginConfig{}, fmt.Errorf("reading %s: %w", cfgPath, err)
 	}
 
 	var cfg pluginConfig
@@ -192,8 +192,9 @@ func caskFromHookInput(in plugin.TapFilesInput, cfg pluginConfig) (*cask, error)
 
 // executableNames returns the archive's binaries, whichever way it spells them.
 func executableNames(a coremanifest.Artifact) []string {
-	var out []string
-	for _, b := range a.Executables() {
+	bins := a.Executables()
+	out := make([]string, 0, len(bins))
+	for _, b := range bins {
 		out = append(out, b.Name)
 	}
 	return out

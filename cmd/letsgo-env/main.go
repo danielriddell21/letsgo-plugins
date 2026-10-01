@@ -117,7 +117,7 @@ func readConfig(configDir string) ([]injection, error) {
 		return nil, fmt.Errorf("%s: no such file; it is where this plugin reads what to inject", path)
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
 
 	var out []injection
