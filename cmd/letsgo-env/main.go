@@ -32,7 +32,10 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"sort"
 	"strings"
@@ -40,19 +43,12 @@ import (
 	"github.com/danielriddell21/letsgo/plugin"
 )
 
-// ConfigFile is the legacy location, read from the repository root, which is
-// where letsgo runs a plugin from. modernConfigFile is preferred when present.
-const ConfigFile = "letsgo-env.mod"
-
-// modernConfigFile is where this plugin's config lives once a repository has
-// moved to letsgo's .letsgo/ convention (config dirs, PBS CD-6/CD-7).
-const modernConfigFile = ".letsgo/env.mod"
-
 // injection is one variable to fill from one environment variable.
 type injection struct {
 	Symbol string
 	EnvVar string
 	Line   int
+	File   string
 }
 
 func main() {
@@ -60,7 +56,7 @@ func main() {
 }
 
 func inject(in plugin.LDFlagsInput) (plugin.LDFlagsOutput, error) {
-	injections, err := readConfig()
+	injections, err := readConfig(in.ConfigDir)
 	if err != nil {
 		return plugin.LDFlagsOutput{}, err
 	}
@@ -80,7 +76,7 @@ func inject(in plugin.LDFlagsInput) (plugin.LDFlagsOutput, error) {
 
 		symbol, err := qualify(want.Symbol, in.Module)
 		if err != nil {
-			return plugin.LDFlagsOutput{}, fmt.Errorf("%s:%d: %w", ConfigFile, want.Line, err)
+			return plugin.LDFlagsOutput{}, fmt.Errorf("%s:%d: %w", want.File, want.Line, err)
 		}
 		out.LDFlags = append(out.LDFlags, "-X", symbol+"="+value)
 	}
@@ -109,35 +105,25 @@ func qualify(symbol, module string) (string, error) {
 	return module + "/" + pkg + "." + name, nil
 }
 
-// readConfig parses the plugin's own config, preferring modernConfigFile and
-// falling back to the legacy ConfigFile if that does not exist.
+// readConfig parses the plugin's own config, which core locates: the config
+// dir first, then the legacy file at the repository root.
 //
 // The same line-and-comment shape as letsgo.mod, and no more: this file says
 // which variables to fill from where, and a config format that could say more
 // than that would be a way to smuggle logic into a release.
-func readConfig() ([]injection, error) {
-	path := modernConfigFile
-
-	f, err := os.Open(path)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			return nil, fmt.Errorf("%s: %w", path, err)
-		}
-		path = ConfigFile
-		f, err = os.Open(path)
+func readConfig(configDir string) ([]injection, error) {
+	data, path, err := plugin.ReadConfig(configDir, "env")
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("%s: no such file; it is where this plugin reads what to inject", path)
 	}
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("%s: no such file; it is where this plugin reads what to inject", path)
-		}
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, err
 	}
-	defer func() { _ = f.Close() }()
 
 	var out []injection
 	seen := map[string]int{}
 
-	scanner := bufio.NewScanner(f)
+	scanner := bufio.NewScanner(bytes.NewReader(data))
 	for line := 1; scanner.Scan(); line++ {
 		text := strings.TrimSpace(scanner.Text())
 		if before, _, ok := strings.Cut(text, "//"); ok {
@@ -157,7 +143,7 @@ func readConfig() ([]injection, error) {
 			return nil, fmt.Errorf("%s:%d: %s is already injected at line %d", path, line, symbol, first)
 		}
 		seen[symbol] = line
-		out = append(out, injection{Symbol: symbol, EnvVar: envVar, Line: line})
+		out = append(out, injection{Symbol: symbol, EnvVar: envVar, Line: line, File: path})
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)

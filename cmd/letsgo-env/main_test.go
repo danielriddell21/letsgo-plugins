@@ -15,8 +15,8 @@ func writeConfig(t *testing.T, body string) {
 	t.Helper()
 
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, ConfigFile), []byte(body), 0o600); err != nil {
-		t.Fatalf("writing %s: %v", ConfigFile, err)
+	if err := os.WriteFile(filepath.Join(dir, "letsgo-env.mod"), []byte(body), 0o600); err != nil {
+		t.Fatalf("writing %s: %v", "letsgo-env.mod", err)
 	}
 	t.Chdir(dir)
 }
@@ -93,7 +93,7 @@ func TestInjectAcceptsAnEmptyValueThatIsSet(t *testing.T) {
 func TestReadConfigSkipsBlankLinesAndComments(t *testing.T) {
 	writeConfig(t, "// what the binary phones home to\n\ninject pkg.A FIRST // trailing\n")
 
-	got, err := readConfig()
+	got, err := readConfig(".letsgo")
 	if err != nil {
 		t.Fatalf("readConfig: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestReadConfigSkipsBlankLinesAndComments(t *testing.T) {
 func TestReadConfigRejectsADuplicateSymbol(t *testing.T) {
 	writeConfig(t, "inject pkg.A FIRST\ninject pkg.A SECOND\n")
 
-	if _, err := readConfig(); err == nil {
+	if _, err := readConfig(".letsgo"); err == nil {
 		t.Error("two values for one symbol: the second silently wins, so say so instead")
 	}
 }
@@ -116,7 +116,7 @@ func TestReadConfigRejectsADuplicateSymbol(t *testing.T) {
 func TestReadConfigRejectsAMalformedLine(t *testing.T) {
 	writeConfig(t, "set pkg.A FIRST\n")
 
-	if _, err := readConfig(); err == nil {
+	if _, err := readConfig(".letsgo"); err == nil {
 		t.Error("only `inject` is a directive here")
 	}
 }
@@ -124,11 +124,11 @@ func TestReadConfigRejectsAMalformedLine(t *testing.T) {
 func TestReadConfigSaysWhereItLooked(t *testing.T) {
 	t.Chdir(t.TempDir())
 
-	_, err := readConfig()
+	_, err := readConfig(".letsgo")
 	if err == nil {
 		t.Fatal("expected a failure when the file is absent")
 	}
-	if !strings.Contains(err.Error(), ConfigFile) {
+	if !strings.Contains(err.Error(), "env.mod") {
 		t.Errorf("the error should name the file, got %v", err)
 	}
 }
@@ -143,11 +143,11 @@ func TestReadConfigPrefersTheModernLocation(t *testing.T) {
 	if err := os.WriteFile(".letsgo/env.mod", []byte("inject pkg.A MODERN\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(ConfigFile, []byte("inject pkg.A LEGACY\n"), 0o600); err != nil {
+	if err := os.WriteFile("letsgo-env.mod", []byte("inject pkg.A LEGACY\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	got, err := readConfig()
+	got, err := readConfig(".letsgo")
 	if err != nil {
 		t.Fatal(err)
 	}

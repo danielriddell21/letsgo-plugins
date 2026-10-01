@@ -262,7 +262,7 @@ func TestReadPluginConfigParsesVariantAndToken(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg, err := readPluginConfig()
+	cfg, err := readPluginConfig(".letsgo")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +276,7 @@ func TestReadPluginConfigParsesVariantAndToken(t *testing.T) {
 func TestReadPluginConfigToleratesNoFile(t *testing.T) {
 	t.Chdir(t.TempDir())
 
-	cfg, err := readPluginConfig()
+	cfg, err := readPluginConfig(".letsgo")
 	if err != nil || cfg != (pluginConfig{}) {
 		t.Errorf("readPluginConfig() = %+v, %v, want a zero config and no error", cfg, err)
 	}
@@ -288,7 +288,7 @@ func TestReadPluginConfigRejectsAMalformedLine(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := readPluginConfig(); err == nil {
+	if _, err := readPluginConfig(".letsgo"); err == nil {
 		t.Error("a line missing its value should not silently parse")
 	}
 }
@@ -299,7 +299,7 @@ func TestReadPluginConfigRejectsAnUnknownDirective(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := readPluginConfig(); err == nil || !strings.Contains(err.Error(), "colour") {
+	if _, err := readPluginConfig(".letsgo"); err == nil || !strings.Contains(err.Error(), "colour") {
 		t.Errorf("err = %v, want one naming the unknown directive", err)
 	}
 }
@@ -310,7 +310,7 @@ func TestReadPluginConfigRejectsADuplicateDirective(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := readPluginConfig(); err == nil || !strings.Contains(err.Error(), "already set") {
+	if _, err := readPluginConfig(".letsgo"); err == nil || !strings.Contains(err.Error(), "already set") {
 		t.Errorf("err = %v, want one naming the repeated directive", err)
 	}
 }
@@ -329,7 +329,7 @@ func TestReadPluginConfigPrefersTheModernLocation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg, err := readPluginConfig()
+	cfg, err := readPluginConfig(".letsgo")
 	if err != nil {
 		t.Fatal(err)
 	}

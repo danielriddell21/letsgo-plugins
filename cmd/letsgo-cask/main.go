@@ -39,9 +39,10 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"path"
@@ -63,17 +64,6 @@ func main() {
 	}
 }
 
-// PluginConfigFile is the legacy location, read from the repository root,
-// which is where letsgo runs a plugin from. modernConfigFile is preferred
-// when present. Everything else the cask needs — description, licence,
-// homepage, caveats, and every artifact's digest and URL — comes from the
-// hook's input instead.
-const PluginConfigFile = "letsgo-cask.mod"
-
-// modernConfigFile is where this plugin's config lives once a repository has
-// moved to letsgo's .letsgo/ convention (config dirs, PBS CD-6/CD-7).
-const modernConfigFile = ".letsgo/cask.mod"
-
 // pluginConfig is letsgo-cask.mod, decoded.
 type pluginConfig struct {
 	Variant string
@@ -82,7 +72,7 @@ type pluginConfig struct {
 
 // answerTapFiles is this plugin's answer to the tap-files hook.
 func answerTapFiles(in plugin.TapFilesInput) (plugin.TapFilesOutput, error) {
-	cfg, err := readPluginConfig()
+	cfg, err := readPluginConfig(in.ConfigDir)
 	if err != nil {
 		return plugin.TapFilesOutput{}, err
 	}
@@ -97,25 +87,17 @@ func answerTapFiles(in plugin.TapFilesInput) (plugin.TapFilesOutput, error) {
 	}}, nil
 }
 
-// readPluginConfig parses the plugin's own config, preferring
-// modernConfigFile and falling back to the legacy PluginConfigFile. Missing
+// readPluginConfig parses the plugin's own config, which core locates: the
+// config dir first, then the legacy file at the repository root. Missing
 // entirely is not an error: a release with one darwin build and no variant
 // needs neither directive.
-func readPluginConfig() (pluginConfig, error) {
-	path := modernConfigFile
-	data, err := os.ReadFile(path)
+func readPluginConfig(configDir string) (pluginConfig, error) {
+	data, cfgPath, err := plugin.ReadConfig(configDir, "cask")
+	if errors.Is(err, fs.ErrNotExist) {
+		return pluginConfig{}, nil
+	}
 	if err != nil {
-		if !os.IsNotExist(err) {
-			return pluginConfig{}, fmt.Errorf("%s: %w", path, err)
-		}
-		path = PluginConfigFile
-		data, err = os.ReadFile(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return pluginConfig{}, nil
-			}
-			return pluginConfig{}, fmt.Errorf("%s: %w", path, err)
-		}
+		return pluginConfig{}, err
 	}
 
 	var cfg pluginConfig
@@ -134,12 +116,12 @@ func readPluginConfig() (pluginConfig, error) {
 		fields := strings.Fields(text)
 		if len(fields) != 2 {
 			return pluginConfig{}, fmt.Errorf("%s:%d: expected `variant <name>` or `token <name>`, got %q",
-				path, line, text)
+				cfgPath, line, text)
 		}
 
 		directive, value := fields[0], fields[1]
 		if seen[directive] {
-			return pluginConfig{}, fmt.Errorf("%s:%d: %s is already set", path, line, directive)
+			return pluginConfig{}, fmt.Errorf("%s:%d: %s is already set", cfgPath, line, directive)
 		}
 		seen[directive] = true
 
@@ -149,11 +131,11 @@ func readPluginConfig() (pluginConfig, error) {
 		case "token":
 			cfg.Token = value
 		default:
-			return pluginConfig{}, fmt.Errorf("%s:%d: unknown directive %q", path, line, directive)
+			return pluginConfig{}, fmt.Errorf("%s:%d: unknown directive %q", cfgPath, line, directive)
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return pluginConfig{}, fmt.Errorf("%s: %w", path, err)
+		return pluginConfig{}, fmt.Errorf("%s: %w", cfgPath, err)
 	}
 	return cfg, nil
 }
@@ -208,43 +190,13 @@ func caskFromHookInput(in plugin.TapFilesInput, cfg pluginConfig) (*cask, error)
 	return c, nil
 }
 
-// manifest is the part of letsgo.json the standalone renderer needs.
-// Deliberately a subset: unknown fields are ignored, so a release published
-// by a later letsgo still produces a cask.
-type manifest struct {
-	Schema    int        `json:"schema"`
-	Project   string     `json:"project"`
-	Version   string     `json:"version"`
-	Tag       string     `json:"tag"`
-	Artifacts []artifact `json:"artifacts"`
-}
-
-type artifact struct {
-	Name     string   `json:"name"`
-	OS       string   `json:"os"`
-	Arch     string   `json:"arch"`
-	SHA256   string   `json:"sha256"`
-	Binary   string   `json:"binary"`
-	Binaries []binary `json:"binaries"`
-}
-
-type binary struct {
-	Name string `json:"name"`
-}
-
-// executables returns the archive's binaries, whichever way it spells them.
-func (a artifact) executables() []string {
-	if len(a.Binaries) > 0 {
-		out := make([]string, len(a.Binaries))
-		for i, b := range a.Binaries {
-			out[i] = b.Name
-		}
-		return out
+// executableNames returns the archive's binaries, whichever way it spells them.
+func executableNames(a coremanifest.Artifact) []string {
+	var out []string
+	for _, b := range a.Executables() {
+		out = append(out, b.Name)
 	}
-	if a.Binary == "" {
-		return nil
-	}
-	return []string{a.Binary}
+	return out
 }
 
 func run(args []string, out *os.File) error {
@@ -335,20 +287,15 @@ func permute(fs *flag.FlagSet, args []string) []string {
 	return append(flags, operands...)
 }
 
-func read(path string) (*manifest, error) {
-	data, err := os.ReadFile(path)
+func read(path string) (*coremanifest.Manifest, error) {
+	m, err := coremanifest.Read(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", path, err)
-	}
-
-	var m manifest
-	if err := json.Unmarshal(data, &m); err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
 	if m.Schema != 1 {
 		return nil, fmt.Errorf("%s has schema %d, which this letsgo-cask does not understand", path, m.Schema)
 	}
-	return &m, nil
+	return m, nil
 }
 
 // cask is a rendered Homebrew cask.
@@ -384,7 +331,7 @@ type caskFields struct {
 	Caveats  string
 }
 
-func build(m *manifest, repo, variant string, f caskFields) (*cask, error) {
+func build(m *coremanifest.Manifest, repo, variant string, f caskFields) (*cask, error) {
 	tag := m.Tag
 	if tag == "" {
 		tag = "v" + m.Version
@@ -427,7 +374,7 @@ func build(m *manifest, repo, variant string, f caskFields) (*cask, error) {
 		default:
 			continue
 		}
-		c.Binaries = merge(c.Binaries, a.executables())
+		c.Binaries = merge(c.Binaries, executableNames(a))
 	}
 
 	if c.ARM == nil && c.Intel == nil {
