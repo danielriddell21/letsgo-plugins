@@ -42,11 +42,13 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"path"
 	"sort"
 	"strings"
 
+	coremanifest "github.com/danielriddell21/letsgo/manifest"
 	"github.com/danielriddell21/letsgo/plugin"
 )
 
@@ -409,12 +411,12 @@ func build(m *manifest, repo, variant string, f caskFields) (*cask, error) {
 	}
 
 	for _, a := range m.Artifacts {
-		if a.OS != "darwin" || base(a.Name, m.Version) != want {
+		if a.OS != "darwin" || coremanifest.BaseName(a.Name, m.Version, a.OS, a.Arch) != want {
 			continue
 		}
 
 		d := &download{
-			URL:    fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", repo, tag, a.Name),
+			URL:    downloadURL(repo, tag, a.Name),
 			SHA256: a.SHA256,
 		}
 		switch a.Arch {
@@ -442,21 +444,18 @@ func build(m *manifest, repo, variant string, f caskFields) (*cask, error) {
 	return c, nil
 }
 
-// base strips the version and platform letsgo appends to every archive.
-func base(archive, version string) string {
-	name := archive
-	for _, ext := range []string{".tar.gz", ".zip"} {
-		if trimmed, ok := strings.CutSuffix(name, ext); ok {
-			name = trimmed
-			break
-		}
+// downloadURL is where the forge serves a release asset from. A scoped tag
+// keeps its slashes, which the forge reads as directory segments; every
+// segment, and the asset's name, is escaped so a character the URL cannot
+// carry does not change which file it names. It is the URL core builds for
+// the hook path.
+func downloadURL(repo, tag, name string) string {
+	segments := strings.Split(tag, "/")
+	for i, segment := range segments {
+		segments[i] = url.PathEscape(segment)
 	}
-	// What is left is "<base>_<version>_<os>_<arch>".
-	cut := "_" + version + "_"
-	if i := strings.Index(name, cut); i >= 0 {
-		return name[:i]
-	}
-	return ""
+	return fmt.Sprintf("https://github.com/%s/releases/download/%s/%s",
+		repo, strings.Join(segments, "/"), url.PathEscape(name))
 }
 
 func merge(into, add []string) []string {

@@ -127,23 +127,6 @@ func TestCaskRejectsOnlyAnUnknownSchema(t *testing.T) {
 	}
 }
 
-func TestBaseStripsTheVersionAndPlatform(t *testing.T) {
-	for archive, want := range map[string]string{
-		"gambit_1.4.0_darwin_arm64.tar.gz":     "gambit",
-		"gambit-gui_1.4.0_darwin_amd64.tar.gz": "gambit-gui",
-		"tool_1.0.0_windows_amd64.zip":         "tool",
-		"unrelated.tar.gz":                     "",
-	} {
-		version := "1.4.0"
-		if strings.Contains(archive, "1.0.0") {
-			version = "1.0.0"
-		}
-		if got := base(archive, version); got != want {
-			t.Errorf("base(%q) = %q, want %q", archive, got, want)
-		}
-	}
-}
-
 func TestCaskCarriesTheLicence(t *testing.T) {
 	got := generate(t, "--repo", "you/gambit", "--license", "MIT", manifestFile(t, published))
 
@@ -364,5 +347,32 @@ func TestCaskKeepsAScopedTagInTheDownloadURL(t *testing.T) {
 	want := "https://github.com/you/gambit/releases/download/services/api/v1.4.0/gambit_1.4.0_darwin_arm64.tar.gz"
 	if !strings.Contains(got, want) {
 		t.Errorf("the cask is missing %q:\n%s", want, got)
+	}
+}
+
+func TestDownloadURL(t *testing.T) {
+	tests := []struct {
+		name, tag, asset, want string
+	}{
+		{"root tag", "v1.4.0", "gambit_1.4.0_darwin_arm64.tar.gz", "https://github.com/you/gambit/releases/download/v1.4.0/gambit_1.4.0_darwin_arm64.tar.gz"},
+		{"scoped tag keeps its slashes", "services/api/v1.4.0", "a.tar.gz", "https://github.com/you/gambit/releases/download/services/api/v1.4.0/a.tar.gz"},
+		{"a character a URL cannot carry is escaped", "v1.4.0+build 1", "a b#c.tar.gz", "https://github.com/you/gambit/releases/download/v1.4.0+build%201/a%20b%23c.tar.gz"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := downloadURL("you/gambit", tt.tag, tt.asset); got != tt.want {
+				t.Errorf("downloadURL() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// A project named after its own version must not be cut at the first
+// "_<version>_": core strips exactly the suffix the builder appended.
+func TestCaskReadsABaseNameThatContainsTheVersion(t *testing.T) {
+	odd := strings.NewReplacer("gambit_1.4.0_", "gambit_1.4.0_x_1.4.0_", "\"project\": \"gambit\"", "\"project\": \"gambit_1.4.0_x\"").Replace(published)
+	got := generate(t, "--repo", "you/gambit", manifestFile(t, odd))
+	if !strings.Contains(got, "gambit_1.4.0_x_1.4.0_darwin_arm64.tar.gz") {
+		t.Errorf("the cask lost the archive:\n%s", got)
 	}
 }
