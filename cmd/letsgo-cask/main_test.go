@@ -376,3 +376,17 @@ func TestCaskReadsABaseNameThatContainsTheVersion(t *testing.T) {
 		t.Errorf("the cask lost the archive:\n%s", got)
 	}
 }
+
+func TestReadPluginConfigReportsAnUnreadableFile(t *testing.T) {
+	t.Chdir(t.TempDir())
+	// A directory where the file should be exists but cannot be read, which is
+	// not the same as the file being absent.
+	if err := os.Mkdir("letsgo-cask.mod", 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := readPluginConfig(".letsgo")
+	if err == nil || !strings.Contains(err.Error(), "letsgo-cask.mod") {
+		t.Errorf("readPluginConfig() error = %v, want one naming letsgo-cask.mod", err)
+	}
+}

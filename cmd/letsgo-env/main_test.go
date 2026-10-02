@@ -163,3 +163,17 @@ func TestQualifyNeedsAPackageAndAVariable(t *testing.T) {
 		}
 	}
 }
+
+func TestReadConfigReportsAnUnreadableFile(t *testing.T) {
+	t.Chdir(t.TempDir())
+	// A directory where the file should be exists but cannot be read, which is
+	// not the same as the file being absent.
+	if err := os.Mkdir("letsgo-env.mod", 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := readConfig(".letsgo")
+	if err == nil || !strings.Contains(err.Error(), "letsgo-env.mod") {
+		t.Errorf("readConfig() error = %v, want one naming letsgo-env.mod", err)
+	}
+}
