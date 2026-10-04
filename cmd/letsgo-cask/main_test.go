@@ -17,10 +17,28 @@ const published = `{
   "artifacts": [
     {"name":"gambit_1.4.0_darwin_arm64.tar.gz","os":"darwin","arch":"arm64","sha256":"base-arm","binary":"gambit"},
     {"name":"gambit_1.4.0_linux_amd64.tar.gz","os":"linux","arch":"amd64","sha256":"base-linux","binary":"gambit"},
-    {"name":"gambit-gui_1.4.0_darwin_arm64.tar.gz","os":"darwin","arch":"arm64","sha256":"gui-arm","binary":"gambit-gui"},
-    {"name":"gambit-gui_1.4.0_darwin_amd64.tar.gz","os":"darwin","arch":"amd64","sha256":"gui-intel","binary":"gambit-gui"}
+    {"name":"gambit-gui_1.4.0_darwin_arm64.tar.gz","os":"darwin","arch":"arm64","sha256":"gui-arm","binary":"gambit-gui","variant":"gui"},
+    {"name":"gambit-gui_1.4.0_darwin_amd64.tar.gz","os":"darwin","arch":"amd64","sha256":"gui-intel","binary":"gambit-gui","variant":"gui"}
   ]
 }`
+
+// configDir is a repository's .letsgo directory, as core hands it to a plugin,
+// with the given cask.mod in it, or with none when body is empty. No test
+// changes the working directory.
+func configDir(t *testing.T, body string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), ".letsgo")
+	if body == "" {
+		return dir
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "cask.mod"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
 
 func manifestFile(t *testing.T, body string) string {
 	t.Helper()
@@ -93,7 +111,7 @@ func TestCaskRefusesWhatItCannotBuild(t *testing.T) {
 		{"no repository", "--repo is required", []string{path}},
 		{
 			"a variant with no macOS build",
-			"no macOS archive",
+			"no macOS build",
 			[]string{"--repo", "you/gambit", "--variant", "nope", path},
 		},
 		{"no manifest named", "expected one argument", []string{"--repo", "you/gambit"}},
@@ -183,7 +201,8 @@ func TestCaskWithoutATapStillRenders(t *testing.T) {
 // never by re-parsing the archive's name.
 func TestAnswerTapFilesRendersTheVariantsArchives(t *testing.T) {
 	in := plugin.TapFilesInput{
-		Project: "gambit", Version: "1.4.0", Tag: "v1.4.0",
+		ConfigDir: configDir(t, ""),
+		Project:   "gambit", Version: "1.4.0", Tag: "v1.4.0",
 		Description: "a gambit", License: "MIT", Homepage: "https://example.com/gambit",
 		Artifacts: []plugin.TapArtifact{
 			{
@@ -222,13 +241,9 @@ func TestAnswerTapFilesRendersTheVariantsArchives(t *testing.T) {
 }
 
 func TestAnswerTapFilesUsesTheConfiguredVariantAndToken(t *testing.T) {
-	t.Chdir(t.TempDir())
-	if err := os.WriteFile("letsgo-cask.mod", []byte("variant gui\ntoken gambit\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
 	in := plugin.TapFilesInput{
-		Project: "gambit", Version: "1.4.0",
+		ConfigDir: configDir(t, "variant gui\ntoken gambit\n"),
+		Project:   "gambit", Version: "1.4.0",
 		Artifacts: []plugin.TapArtifact{
 			{
 				Archive: "gambit-gui_1.4.0_darwin_arm64.tar.gz", Variant: "gui", OS: "darwin", Arch: "arm64",
@@ -248,21 +263,14 @@ func TestAnswerTapFilesUsesTheConfiguredVariantAndToken(t *testing.T) {
 }
 
 func TestAnswerTapFilesRefusesWhatItCannotBuild(t *testing.T) {
-	t.Chdir(t.TempDir())
-
-	_, err := answerTapFiles(plugin.TapFilesInput{Project: "gambit", Version: "1.4.0"})
+	_, err := answerTapFiles(plugin.TapFilesInput{ConfigDir: configDir(t, ""), Project: "gambit", Version: "1.4.0"})
 	if err == nil || !strings.Contains(err.Error(), "no macOS build") {
 		t.Errorf("err = %v, want a refusal naming the missing macOS build", err)
 	}
 }
 
 func TestReadPluginConfigParsesVariantAndToken(t *testing.T) {
-	t.Chdir(t.TempDir())
-	if err := os.WriteFile("letsgo-cask.mod", []byte("// a comment\nvariant gui\ntoken gambit\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := readPluginConfig(".letsgo")
+	cfg, err := readPluginConfig(configDir(t, "// a comment\nvariant gui\ntoken gambit\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,70 +279,76 @@ func TestReadPluginConfigParsesVariantAndToken(t *testing.T) {
 	}
 }
 
-// No letsgo-cask.mod at all is a normal thing for a release with one darwin
-// build and no variant, and must not fail.
+// No cask.mod at all is a normal thing for a release with one darwin build and
+// no variant, and must not fail.
 func TestReadPluginConfigToleratesNoFile(t *testing.T) {
-	t.Chdir(t.TempDir())
-
-	cfg, err := readPluginConfig(".letsgo")
+	cfg, err := readPluginConfig(configDir(t, ""))
 	if err != nil || cfg != (pluginConfig{}) {
 		t.Errorf("readPluginConfig() = %+v, %v, want a zero config and no error", cfg, err)
 	}
 }
 
 func TestReadPluginConfigRejectsAMalformedLine(t *testing.T) {
-	t.Chdir(t.TempDir())
-	if err := os.WriteFile("letsgo-cask.mod", []byte("variant\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := readPluginConfig(".letsgo"); err == nil {
+	if _, err := readPluginConfig(configDir(t, "variant\n")); err == nil {
 		t.Error("a line missing its value should not silently parse")
 	}
 }
 
 func TestReadPluginConfigRejectsAnUnknownDirective(t *testing.T) {
-	t.Chdir(t.TempDir())
-	if err := os.WriteFile("letsgo-cask.mod", []byte("colour blue\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := readPluginConfig(".letsgo"); err == nil || !strings.Contains(err.Error(), "colour") {
-		t.Errorf("err = %v, want one naming the unknown directive", err)
+	_, err := readPluginConfig(configDir(t, "colour blue\n"))
+	if err == nil || !strings.Contains(err.Error(), "colour") || !strings.Contains(err.Error(), "cask.mod:1:1") {
+		t.Errorf("err = %v, want one naming the unknown directive at path:line:col", err)
 	}
 }
 
 func TestReadPluginConfigRejectsADuplicateDirective(t *testing.T) {
-	t.Chdir(t.TempDir())
-	if err := os.WriteFile("letsgo-cask.mod", []byte("variant gui\nvariant pro\n"), 0o600); err != nil {
-		t.Fatal(err)
+	_, err := readPluginConfig(configDir(t, "variant gui\nvariant pro\n"))
+	if err == nil || !strings.Contains(err.Error(), "already set") || !strings.Contains(err.Error(), "cask.mod:2:") {
+		t.Errorf("err = %v, want one naming the repeated directive on its line", err)
 	}
+}
 
-	if _, err := readPluginConfig(".letsgo"); err == nil || !strings.Contains(err.Error(), "already set") {
-		t.Errorf("err = %v, want one naming the repeated directive", err)
+// Core's grammar, so a quoted value works as it does in letsgo.mod.
+func TestReadPluginConfigReadsQuotedValues(t *testing.T) {
+	cfg, err := readPluginConfig(configDir(t, "token \"my cask\"\n"))
+	if err != nil || cfg.Token != "my cask" {
+		t.Errorf("readPluginConfig() = %+v, %v", cfg, err)
 	}
 }
 
 // .letsgo/cask.mod is preferred over a legacy letsgo-cask.mod when both
 // exist, since that is where letsgo's own config-dir convention now points.
 func TestReadPluginConfigPrefersTheModernLocation(t *testing.T) {
-	t.Chdir(t.TempDir())
-	if err := os.MkdirAll(".letsgo", 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(".letsgo/cask.mod", []byte("variant gui\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile("letsgo-cask.mod", []byte("variant pro\n"), 0o600); err != nil {
+	dir := configDir(t, "variant gui\n")
+	if err := os.WriteFile(filepath.Join(filepath.Dir(dir), "letsgo-cask.mod"), []byte("variant pro\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	cfg, err := readPluginConfig(".letsgo")
+	cfg, err := readPluginConfig(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Variant != "gui" {
 		t.Errorf("cfg = %+v, want the modern file's variant", cfg)
+	}
+}
+
+func TestReadPluginConfigFallsBackToTheLegacyFile(t *testing.T) {
+	dir := configDir(t, "")
+	if err := os.WriteFile(filepath.Join(filepath.Dir(dir), "letsgo-cask.mod"), []byte("variant pro\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := readPluginConfig(dir)
+	if err != nil || cfg.Variant != "pro" {
+		t.Errorf("readPluginConfig() = %+v, %v, want the legacy file's variant", cfg, err)
+	}
+}
+
+// Core no longer guesses the working directory, so no config dir is an error
+// rather than a quiet fall-through to wherever the plugin happens to run.
+func TestReadPluginConfigNeedsAConfigDir(t *testing.T) {
+	if _, err := readPluginConfig(""); err == nil {
+		t.Error("an empty ConfigDir must be an error")
 	}
 }
 
@@ -350,23 +364,6 @@ func TestCaskKeepsAScopedTagInTheDownloadURL(t *testing.T) {
 	}
 }
 
-func TestDownloadURL(t *testing.T) {
-	tests := []struct {
-		name, tag, asset, want string
-	}{
-		{"root tag", "v1.4.0", "gambit_1.4.0_darwin_arm64.tar.gz", "https://github.com/you/gambit/releases/download/v1.4.0/gambit_1.4.0_darwin_arm64.tar.gz"},
-		{"scoped tag keeps its slashes", "services/api/v1.4.0", "a.tar.gz", "https://github.com/you/gambit/releases/download/services/api/v1.4.0/a.tar.gz"},
-		{"a character a URL cannot carry is escaped", "v1.4.0+build 1", "a b#c.tar.gz", "https://github.com/you/gambit/releases/download/v1.4.0+build%201/a%20b%23c.tar.gz"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := downloadURL("you/gambit", tt.tag, tt.asset); got != tt.want {
-				t.Errorf("downloadURL() = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
 // A project named after its own version must not be cut at the first
 // "_<version>_": core strips exactly the suffix the builder appended.
 func TestCaskReadsABaseNameThatContainsTheVersion(t *testing.T) {
@@ -378,15 +375,28 @@ func TestCaskReadsABaseNameThatContainsTheVersion(t *testing.T) {
 }
 
 func TestReadPluginConfigReportsAnUnreadableFile(t *testing.T) {
-	t.Chdir(t.TempDir())
+	dir := configDir(t, "")
 	// A directory where the file should be exists but cannot be read, which is
 	// not the same as the file being absent.
-	if err := os.Mkdir("letsgo-cask.mod", 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "cask.mod"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 
-	_, err := readPluginConfig(".letsgo")
-	if err == nil || !strings.Contains(err.Error(), "letsgo-cask.mod") {
-		t.Errorf("readPluginConfig() error = %v, want one naming letsgo-cask.mod", err)
+	_, err := readPluginConfig(dir)
+	if err == nil || !strings.Contains(err.Error(), "cask.mod") {
+		t.Errorf("readPluginConfig() error = %v, want one naming cask.mod", err)
+	}
+}
+
+// Both front doors build one cask the same way, from the same selection rule:
+// a variant is told by the Variant core recorded, never by re-parsing an
+// archive's name, so a manifest written before the field existed matches no
+// variant.
+func TestStandaloneSelectsByTheRecordedVariantOnly(t *testing.T) {
+	old := strings.NewReplacer(`,"variant":"gui"`, ``).Replace(published)
+
+	err := run([]string{"--repo", "you/gambit", "--variant", "gui", manifestFile(t, old)}, os.Stdout)
+	if err == nil || !strings.Contains(err.Error(), "no macOS build") {
+		t.Errorf("err = %v, want no macOS build for a variant the manifest never recorded", err)
 	}
 }
