@@ -9,23 +9,28 @@ import (
 	"github.com/danielriddell21/letsgo/plugin"
 )
 
-// writeConfig puts a letsgo-env.mod in a temporary directory and makes it the
-// working directory, which is where letsgo runs a plugin from.
-func writeConfig(t *testing.T, body string) {
+// writeConfig puts an env.mod in a temporary repository's .letsgo directory and
+// returns that directory, which is what core hands the plugin as ConfigDir. No
+// test changes the working directory.
+func writeConfig(t *testing.T, body string) string {
 	t.Helper()
 
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "letsgo-env.mod"), []byte(body), 0o600); err != nil {
-		t.Fatalf("writing %s: %v", "letsgo-env.mod", err)
+	root := t.TempDir()
+	dir := filepath.Join(root, ".letsgo")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
 	}
-	t.Chdir(dir)
+	if err := os.WriteFile(filepath.Join(dir, "env.mod"), []byte(body), 0o600); err != nil {
+		t.Fatalf("writing env.mod: %v", err)
+	}
+	return dir
 }
 
 func TestInjectQualifiesModuleRelativeSymbols(t *testing.T) {
-	writeConfig(t, "inject internal/telemetry.otelEndpoint OTEL_ENDPOINT\n")
+	configDir := writeConfig(t, "inject internal/telemetry.otelEndpoint OTEL_ENDPOINT\n")
 	t.Setenv("OTEL_ENDPOINT", "https://otel.example")
 
-	out, err := inject(plugin.LDFlagsInput{Module: "github.com/danielriddell21/unum"})
+	out, err := inject(plugin.LDFlagsInput{ConfigDir: configDir, Module: "github.com/danielriddell21/unum"})
 	if err != nil {
 		t.Fatalf("inject: %v", err)
 	}
@@ -37,10 +42,10 @@ func TestInjectQualifiesModuleRelativeSymbols(t *testing.T) {
 }
 
 func TestInjectLeavesAFullyQualifiedSymbolAlone(t *testing.T) {
-	writeConfig(t, "inject github.com/danielriddell21/unum/internal/build.Channel CHANNEL\n")
+	configDir := writeConfig(t, "inject github.com/danielriddell21/unum/internal/build.Channel CHANNEL\n")
 	t.Setenv("CHANNEL", "edge")
 
-	out, err := inject(plugin.LDFlagsInput{Module: "github.com/danielriddell21/unum"})
+	out, err := inject(plugin.LDFlagsInput{ConfigDir: configDir, Module: "github.com/danielriddell21/unum"})
 	if err != nil {
 		t.Fatalf("inject: %v", err)
 	}
@@ -52,9 +57,9 @@ func TestInjectLeavesAFullyQualifiedSymbolAlone(t *testing.T) {
 // The whole point of the plugin: an unset variable fails the release rather
 // than compiling an empty string into the binary.
 func TestInjectFailsOnAnUnsetVariable(t *testing.T) {
-	writeConfig(t, "inject internal/telemetry.otelEndpoint OTEL_ENDPOINT\n")
+	configDir := writeConfig(t, "inject internal/telemetry.otelEndpoint OTEL_ENDPOINT\n")
 
-	_, err := inject(plugin.LDFlagsInput{Module: "example.com/m"})
+	_, err := inject(plugin.LDFlagsInput{ConfigDir: configDir, Module: "example.com/m"})
 	if err == nil {
 		t.Fatal("an unset variable must fail the release")
 	}
@@ -64,9 +69,9 @@ func TestInjectFailsOnAnUnsetVariable(t *testing.T) {
 }
 
 func TestInjectReportsEveryUnsetVariableAtOnce(t *testing.T) {
-	writeConfig(t, "inject pkg.A FIRST\ninject pkg.B SECOND\n")
+	configDir := writeConfig(t, "inject pkg.A FIRST\ninject pkg.B SECOND\n")
 
-	_, err := inject(plugin.LDFlagsInput{Module: "example.com/m"})
+	_, err := inject(plugin.LDFlagsInput{ConfigDir: configDir, Module: "example.com/m"})
 	if err == nil {
 		t.Fatal("expected a failure")
 	}
@@ -78,10 +83,10 @@ func TestInjectReportsEveryUnsetVariableAtOnce(t *testing.T) {
 }
 
 func TestInjectAcceptsAnEmptyValueThatIsSet(t *testing.T) {
-	writeConfig(t, "inject pkg.A OPTIONAL\n")
+	configDir := writeConfig(t, "inject pkg.A OPTIONAL\n")
 	t.Setenv("OPTIONAL", "")
 
-	out, err := inject(plugin.LDFlagsInput{Module: "example.com/m"})
+	out, err := inject(plugin.LDFlagsInput{ConfigDir: configDir, Module: "example.com/m"})
 	if err != nil {
 		t.Fatalf("set-but-empty is a choice, not an omission: %v", err)
 	}
@@ -91,9 +96,9 @@ func TestInjectAcceptsAnEmptyValueThatIsSet(t *testing.T) {
 }
 
 func TestReadConfigSkipsBlankLinesAndComments(t *testing.T) {
-	writeConfig(t, "// what the binary phones home to\n\ninject pkg.A FIRST // trailing\n")
+	configDir := writeConfig(t, "// what the binary phones home to\n\ninject pkg.A FIRST // trailing\n")
 
-	got, err := readConfig(".letsgo")
+	got, err := readConfig(configDir)
 	if err != nil {
 		t.Fatalf("readConfig: %v", err)
 	}
@@ -106,25 +111,25 @@ func TestReadConfigSkipsBlankLinesAndComments(t *testing.T) {
 }
 
 func TestReadConfigRejectsADuplicateSymbol(t *testing.T) {
-	writeConfig(t, "inject pkg.A FIRST\ninject pkg.A SECOND\n")
+	configDir := writeConfig(t, "inject pkg.A FIRST\ninject pkg.A SECOND\n")
 
-	if _, err := readConfig(".letsgo"); err == nil {
+	if _, err := readConfig(configDir); err == nil {
 		t.Error("two values for one symbol: the second silently wins, so say so instead")
 	}
 }
 
 func TestReadConfigRejectsAMalformedLine(t *testing.T) {
-	writeConfig(t, "set pkg.A FIRST\n")
+	configDir := writeConfig(t, "set pkg.A FIRST\n")
 
-	if _, err := readConfig(".letsgo"); err == nil {
+	if _, err := readConfig(configDir); err == nil {
 		t.Error("only `inject` is a directive here")
 	}
 }
 
 func TestReadConfigSaysWhereItLooked(t *testing.T) {
-	t.Chdir(t.TempDir())
+	configDir := filepath.Join(t.TempDir(), ".letsgo")
 
-	_, err := readConfig(".letsgo")
+	_, err := readConfig(configDir)
 	if err == nil {
 		t.Fatal("expected a failure when the file is absent")
 	}
@@ -136,23 +141,69 @@ func TestReadConfigSaysWhereItLooked(t *testing.T) {
 // .letsgo/env.mod is preferred over a legacy letsgo-env.mod when both exist,
 // since that is where letsgo's own config-dir convention now points.
 func TestReadConfigPrefersTheModernLocation(t *testing.T) {
-	t.Chdir(t.TempDir())
-	if err := os.MkdirAll(".letsgo", 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(".letsgo/env.mod", []byte("inject pkg.A MODERN\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile("letsgo-env.mod", []byte("inject pkg.A LEGACY\n"), 0o600); err != nil {
+	configDir := writeConfig(t, "inject pkg.A MODERN\n")
+	legacy := filepath.Join(filepath.Dir(configDir), "letsgo-env.mod")
+	if err := os.WriteFile(legacy, []byte("inject pkg.A LEGACY\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	got, err := readConfig(".letsgo")
+	got, err := readConfig(configDir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 || got[0].EnvVar != "MODERN" {
 		t.Errorf("got %+v, want the modern file's directive", got)
+	}
+}
+
+// The legacy file beside letsgo.mod is still read when there is no .letsgo one.
+func TestReadConfigFallsBackToTheLegacyFile(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "letsgo-env.mod"), []byte("inject pkg.A LEGACY\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := readConfig(filepath.Join(root, ".letsgo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].EnvVar != "LEGACY" {
+		t.Errorf("got %+v, want the legacy file's directive", got)
+	}
+}
+
+// Core's grammar is the plugin's grammar, so a block, a quoted argument and a
+// syntax error behave as they do in letsgo.mod, with path:line:col errors.
+func TestReadConfigSharesLetsgoModsGrammar(t *testing.T) {
+	configDir := writeConfig(t, "inject (\n\tpkg.A FIRST\n\tpkg.B \"SECOND\"\n)\n")
+	got, err := readConfig(configDir)
+	if err != nil {
+		t.Fatalf("a block of injections: %v", err)
+	}
+	if len(got) != 2 || got[0].EnvVar != "FIRST" || got[1].EnvVar != "SECOND" {
+		t.Errorf("got %+v", got)
+	}
+
+	configDir = writeConfig(t, "inject (\n\tpkg.A FIRST\n")
+	_, err = readConfig(configDir)
+	if err == nil || !strings.Contains(err.Error(), "env.mod:1:") {
+		t.Errorf("err = %v, want a path:line:col syntax error", err)
+	}
+}
+
+func TestReadConfigPointsAtTheLineItRejects(t *testing.T) {
+	configDir := writeConfig(t, "inject pkg.A FIRST\nset pkg.B SECOND\n")
+	_, err := readConfig(configDir)
+	if err == nil || !strings.Contains(err.Error(), "env.mod:2:1: expected `inject <symbol> <ENV_VAR>`") {
+		t.Errorf("err = %v, want the second line named", err)
+	}
+}
+
+// Core no longer falls back to the working directory: with no config dir given
+// there is nowhere to look, and that is an error rather than a guess.
+func TestReadConfigNeedsAConfigDir(t *testing.T) {
+	if _, err := readConfig(""); err == nil {
+		t.Error("an empty ConfigDir must be an error")
 	}
 }
 
@@ -165,15 +216,15 @@ func TestQualifyNeedsAPackageAndAVariable(t *testing.T) {
 }
 
 func TestReadConfigReportsAnUnreadableFile(t *testing.T) {
-	t.Chdir(t.TempDir())
+	configDir := filepath.Join(t.TempDir(), ".letsgo")
 	// A directory where the file should be exists but cannot be read, which is
 	// not the same as the file being absent.
-	if err := os.Mkdir("letsgo-env.mod", 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(configDir, "env.mod"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 
-	_, err := readConfig(".letsgo")
-	if err == nil || !strings.Contains(err.Error(), "letsgo-env.mod") {
-		t.Errorf("readConfig() error = %v, want one naming letsgo-env.mod", err)
+	_, err := readConfig(configDir)
+	if err == nil || !strings.Contains(err.Error(), "env.mod") {
+		t.Errorf("readConfig() error = %v, want one naming env.mod", err)
 	}
 }

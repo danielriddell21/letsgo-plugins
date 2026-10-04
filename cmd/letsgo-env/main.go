@@ -31,8 +31,6 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -105,48 +103,37 @@ func qualify(symbol, module string) (string, error) {
 	return module + "/" + pkg + "." + name, nil
 }
 
-// readConfig parses the plugin's own config, which core locates: the config
-// dir first, then the legacy file at the repository root.
+// readConfig reads the plugin's own config, which core locates and parses with
+// letsgo.mod's grammar: the config dir first, then the legacy file at the
+// repository root. This function adds only the vocabulary, and the rule that a
+// symbol is injected once.
 //
-// The same line-and-comment shape as letsgo.mod, and no more: this file says
-// which variables to fill from where, and a config format that could say more
-// than that would be a way to smuggle logic into a release.
+// This file says which variables to fill from where, and nothing more: a
+// config format that could say more than that would be a way to smuggle logic
+// into a release.
 func readConfig(configDir string) ([]injection, error) {
-	data, path, err := plugin.ReadConfig(configDir, "env")
+	cfg, err := plugin.LoadConfig(configDir, "env")
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, fmt.Errorf("%s: no such file; it is where this plugin reads what to inject", path)
+		return nil, fmt.Errorf("%w; it is where this plugin reads what to inject", err)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", path, err)
+		return nil, err
 	}
 
 	var out []injection
 	seen := map[string]int{}
 
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	for line := 1; scanner.Scan(); line++ {
-		text := strings.TrimSpace(scanner.Text())
-		if before, _, ok := strings.Cut(text, "//"); ok {
-			text = strings.TrimSpace(before)
-		}
-		if text == "" {
-			continue
+	for _, l := range cfg.Lines {
+		if l.Keyword != "inject" || len(l.Args) != 2 {
+			return nil, cfg.Errorf(l, "expected `inject <symbol> <ENV_VAR>`, got `%s`", strings.Join(append([]string{l.Keyword}, l.Args...), " "))
 		}
 
-		fields := strings.Fields(text)
-		if len(fields) != 3 || fields[0] != "inject" {
-			return nil, fmt.Errorf("%s:%d: expected `inject <symbol> <ENV_VAR>`, got %q", path, line, text)
-		}
-
-		symbol, envVar := fields[1], fields[2]
+		symbol, envVar := l.Args[0], l.Args[1]
 		if first, repeated := seen[symbol]; repeated {
-			return nil, fmt.Errorf("%s:%d: %s is already injected at line %d", path, line, symbol, first)
+			return nil, cfg.Errorf(l, "%s is already injected at line %d", symbol, first)
 		}
-		seen[symbol] = line
-		out = append(out, injection{Symbol: symbol, EnvVar: envVar, Line: line, File: path})
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		seen[symbol] = l.Pos.Line
+		out = append(out, injection{Symbol: symbol, EnvVar: envVar, Line: l.Pos.Line, File: cfg.Path})
 	}
 	return out, nil
 }
