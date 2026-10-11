@@ -1,0 +1,125 @@
+package main
+
+import (
+	"errors"
+	"fmt"
+	"io/fs"
+	"path"
+	"strings"
+
+	"github.com/danielriddell21/letsgo/plugin"
+)
+
+// pluginConfig is letsgo-cask.mod, decoded.
+type pluginConfig struct {
+	Variant string
+	Token   string
+}
+
+// answerTapFiles is this plugin's answer to the tap-files hook.
+func answerTapFiles(in plugin.TapFilesInput) (plugin.TapFilesOutput, error) {
+	cfg, err := readPluginConfig(in.ConfigDir)
+	if err != nil {
+		return plugin.TapFilesOutput{}, err
+	}
+
+	c, err := caskFromHookInput(in, cfg)
+	if err != nil {
+		return plugin.TapFilesOutput{}, err
+	}
+
+	return plugin.TapFilesOutput{Files: []plugin.TapFile{
+		{Path: path.Join("Casks", c.Token+".rb"), Content: c.render()},
+	}}, nil
+}
+
+// readPluginConfig reads the plugin's own config, which core locates and
+// parses with letsgo.mod's grammar: the config dir first, then the legacy file
+// at the repository root. This function adds only the vocabulary, and the rule
+// that a directive is set once. Missing entirely is not an error: a release
+// with one darwin build and no variant needs neither directive.
+func readPluginConfig(configDir string) (pluginConfig, error) {
+	cfg, err := plugin.LoadConfig(configDir, "cask")
+	if errors.Is(err, fs.ErrNotExist) {
+		return pluginConfig{}, nil
+	}
+	if err != nil {
+		return pluginConfig{}, err
+	}
+
+	var out pluginConfig
+	seen := map[string]bool{}
+
+	for _, l := range cfg.Lines {
+		switch l.Keyword {
+		case "variant", "token":
+		default:
+			return pluginConfig{}, cfg.Errorf(l, "unknown directive %q", l.Keyword)
+		}
+		if len(l.Args) != 1 {
+			return pluginConfig{}, cfg.Errorf(l, "expected `variant <name>` or `token <name>`, got `%s`",
+				strings.Join(append([]string{l.Keyword}, l.Args...), " "))
+		}
+		if seen[l.Keyword] {
+			return pluginConfig{}, cfg.Errorf(l, "%s is already set", l.Keyword)
+		}
+		seen[l.Keyword] = true
+
+		if l.Keyword == "variant" {
+			out.Variant = l.Args[0]
+		} else {
+			out.Token = l.Args[0]
+		}
+	}
+	return out, nil
+}
+
+// caskFromHookInput builds a cask from the tap-files hook's own input: every
+// digest and URL is already there, built by core, so nothing here recomputes
+// one or asks the forge a question core has already answered.
+func caskFromHookInput(in plugin.TapFilesInput, cfg pluginConfig) (*cask, error) {
+	want := in.Project
+	if cfg.Variant != "" {
+		want = in.Project + "-" + cfg.Variant
+	}
+
+	c := &cask{
+		Token:    cfg.Token,
+		Version:  in.Version,
+		Name:     in.Project,
+		Desc:     in.Description,
+		Homepage: in.Homepage,
+		License:  in.License,
+		Caveats:  in.Caveats,
+	}
+
+	for _, a := range in.Artifacts {
+		if a.OS != "darwin" || a.Variant != cfg.Variant {
+			continue
+		}
+
+		d := &download{URL: a.URL, SHA256: a.SHA256}
+		switch a.Arch {
+		case "arm64":
+			c.ARM = d
+		case "amd64":
+			c.Intel = d
+		default:
+			continue
+		}
+		c.Binaries = merge(c.Binaries, a.Binaries)
+	}
+
+	if c.ARM == nil && c.Intel == nil {
+		return nil, fmt.Errorf(
+			"the release has no macOS build called %s;\n"+
+				"  a cask installs a macOS build, and this release published none under that name", want)
+	}
+	if len(c.Binaries) == 0 {
+		return nil, fmt.Errorf("the archives name no binaries, so the cask has nothing to install")
+	}
+	if c.Token == "" {
+		c.Token = want
+	}
+	return c, nil
+}
