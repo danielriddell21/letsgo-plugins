@@ -56,6 +56,13 @@
 //
 // SOURCE_DATE_EPOCH is set to the commit's time for every build, which buildx
 // uses for the image's timestamps.
+//
+// # Finding docker
+//
+// docker is looked for in /usr/bin, /bin, /usr/sbin and /sbin, never on PATH.
+// Elsewhere, such as Docker Desktop's /usr/local/bin/docker on macOS, name it
+// with LETSGO_DOCKER=/usr/local/bin/docker; letsgo reads the same variable
+// when it checks for docker while planning.
 package main
 
 import (
@@ -93,9 +100,46 @@ type image struct {
 // namePattern keeps an image's name usable as a directory under the output.
 var namePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
 
-// docker runs one buildx build. A variable so tests can stand in for it.
-var docker = func(ctx context.Context, env []string, args ...string) error {
-	cmd := exec.CommandContext(ctx, "docker", args...)
+// dockerEnv names docker's absolute path, for a machine where it is not in
+// a system directory: Docker Desktop's /usr/local/bin/docker on macOS.
+const dockerEnv = "LETSGO_DOCKER"
+
+// systemDirs are the directories docker is looked for in without
+// dockerEnv: ones an ordinary user cannot write to. PATH is never consulted,
+// because whoever controls PATH would choose what runs, and letsgo makes the
+// same choice when it probes for docker while planning.
+var systemDirs = []string{"/usr/bin", "/bin", "/usr/sbin", "/sbin"}
+
+// findDocker is docker's absolute path: dockerEnv's, or the first in
+// systemDirs.
+func findDocker() (string, error) {
+	if value := os.Getenv(dockerEnv); value != "" {
+		if !filepath.IsAbs(value) {
+			return "", fmt.Errorf("%s %q must be an absolute path", dockerEnv, value)
+		}
+		if !executable(value) {
+			return "", fmt.Errorf("%s %q is not an executable file", dockerEnv, value)
+		}
+		return value, nil
+	}
+	for _, dir := range systemDirs {
+		if candidate := filepath.Join(dir, "docker"); executable(candidate) {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("docker is not in %s; set %s to its absolute path",
+		strings.Join(systemDirs, ", "), dockerEnv)
+}
+
+func executable(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
+}
+
+// docker runs one buildx build with the docker at bin. A variable so tests
+// can stand in for it.
+var docker = func(ctx context.Context, bin string, env []string, args ...string) error {
+	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Env = env
 	// buildx reports progress on stderr, and stdout is this hook's answer:
 	// anything the build prints goes to stderr, which letsgo shows on failure.
@@ -112,7 +156,11 @@ func answerImages(in plugin.ImagesInput) (plugin.ImagesOutput, error) {
 		return plugin.ImagesOutput{}, err
 	}
 
-	env, err := buildEnv(in.Date)
+	bin, err := findDocker()
+	if err != nil {
+		return plugin.ImagesOutput{}, err
+	}
+	env, err := buildEnv(in.Date, filepath.Dir(bin))
 	if err != nil {
 		return plugin.ImagesOutput{}, err
 	}
@@ -120,7 +168,7 @@ func answerImages(in plugin.ImagesInput) (plugin.ImagesOutput, error) {
 	out := plugin.ImagesOutput{Images: make([]plugin.OutputImage, 0, len(images))}
 	for _, img := range images {
 		dest := filepath.Join(in.Output, img.Name)
-		if err := docker(context.Background(), env, buildArgs(img, root, in.Context, dest)...); err != nil {
+		if err := docker(context.Background(), bin, env, buildArgs(img, root, in.Context, dest)...); err != nil {
 			return plugin.ImagesOutput{}, fmt.Errorf("building image %s: %w", img.Name, err)
 		}
 		out.Images = append(out.Images, plugin.OutputImage{Suffix: img.Suffix, Layout: dest})
@@ -145,9 +193,17 @@ func buildArgs(img image, root, contextDir, dest string) []string {
 
 // buildEnv is this process's environment with SOURCE_DATE_EPOCH set to the
 // commit's time, so an image is stamped with when its source was written
-// rather than when it happened to be built.
-func buildEnv(date string) ([]string, error) {
-	env := os.Environ()
+// rather than when it happened to be built, and PATH fixed to the system
+// directories and docker's own, which is where docker finds what it runs in
+// turn, such as a credential helper.
+func buildEnv(date, dockerDir string) ([]string, error) {
+	env := make([]string, 0, len(os.Environ())+2)
+	for _, kv := range os.Environ() {
+		if name, _, _ := strings.Cut(kv, "="); !strings.EqualFold(name, "PATH") {
+			env = append(env, kv)
+		}
+	}
+	env = append(env, "PATH="+strings.Join(append(append([]string{}, systemDirs...), dockerDir), string(os.PathListSeparator)))
 	if date == "" {
 		return env, nil
 	}

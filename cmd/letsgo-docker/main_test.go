@@ -39,7 +39,8 @@ func recordDocker(t *testing.T) *[][]string {
 	t.Helper()
 	var calls [][]string
 	orig := docker
-	docker = func(_ context.Context, env []string, args ...string) error {
+	t.Setenv("LETSGO_DOCKER", fakeExecutable(t))
+	docker = func(_ context.Context, _ string, env []string, args ...string) error {
 		calls = append(calls, append(args, "ENV:"+lookup(env, "SOURCE_DATE_EPOCH")))
 		return nil
 	}
@@ -214,7 +215,8 @@ func TestAnswerImagesBuildsEachImageIntoTheOutput(t *testing.T) {
 func TestAnswerImagesStopsAtTheFirstFailedBuild(t *testing.T) {
 	var built int
 	orig := docker
-	docker = func(context.Context, []string, ...string) error {
+	t.Setenv("LETSGO_DOCKER", fakeExecutable(t))
+	docker = func(context.Context, string, []string, ...string) error {
 		built++
 		return os.ErrPermission
 	}
@@ -227,5 +229,70 @@ func TestAnswerImagesStopsAtTheFirstFailedBuild(t *testing.T) {
 	}
 	if built != 1 {
 		t.Errorf("built %d images after a failure, want 1", built)
+	}
+}
+
+// fakeExecutable is an executable file to name in LETSGO_DOCKER.
+func fakeExecutable(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "docker")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestFindDockerTakesAnAbsoluteOverride(t *testing.T) {
+	want := fakeExecutable(t)
+	t.Setenv("LETSGO_DOCKER", want)
+	if got, err := findDocker(); err != nil || got != want {
+		t.Errorf("findDocker = %q, %v, want %q", got, err, want)
+	}
+}
+
+func TestFindDockerRefusesAnOverrideItCannotTrust(t *testing.T) {
+	notExecutable := filepath.Join(t.TempDir(), "docker")
+	if err := os.WriteFile(notExecutable, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for value, want := range map[string]string{
+		"docker":      "absolute path",
+		notExecutable: "not an executable",
+	} {
+		t.Setenv("LETSGO_DOCKER", value)
+		if _, err := findDocker(); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("LETSGO_DOCKER=%q: err = %v, want one mentioning %q", value, err, want)
+		}
+	}
+}
+
+// Without the override only the system directories are searched; PATH,
+// whatever it holds, is not.
+func TestFindDockerIgnoresPath(t *testing.T) {
+	t.Setenv("LETSGO_DOCKER", "")
+	orig := systemDirs
+	systemDirs = []string{t.TempDir()}
+	t.Cleanup(func() { systemDirs = orig })
+	t.Setenv("PATH", filepath.Dir(fakeExecutable(t)))
+
+	if _, err := findDocker(); err == nil || !strings.Contains(err.Error(), "LETSGO_DOCKER") {
+		t.Errorf("err = %v, want docker not found, naming the override", err)
+	}
+}
+
+// The build runs with a PATH of the system directories and docker's own,
+// not whatever PATH letsgo was started with.
+func TestBuildEnvFixesPath(t *testing.T) {
+	t.Setenv("PATH", "/home/someone/bin")
+	env, err := buildEnv("", "/opt/docker/bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := lookup(env, "PATH")
+	if strings.Contains(path, "/home/someone/bin") || !strings.HasSuffix(path, "/opt/docker/bin") {
+		t.Errorf("PATH = %q", path)
+	}
+	if _, err := buildEnv("yesterday", "/usr/bin"); err == nil {
+		t.Error("a commit date that is not RFC 3339 was accepted")
 	}
 }
