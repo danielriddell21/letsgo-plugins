@@ -183,7 +183,8 @@ func TestCaskWithoutATapStillRenders(t *testing.T) {
 // never by re-parsing the archive's name.
 func TestAnswerTapFilesRendersTheVariantsArchives(t *testing.T) {
 	in := plugin.TapFilesInput{
-		Project: "gambit", Version: "1.4.0", Tag: "v1.4.0",
+		ConfigDir: ".letsgo",
+		Project:   "gambit", Version: "1.4.0", Tag: "v1.4.0",
 		Description: "a gambit", License: "MIT", Homepage: "https://example.com/gambit",
 		Artifacts: []plugin.TapArtifact{
 			{
@@ -228,7 +229,8 @@ func TestAnswerTapFilesUsesTheConfiguredVariantAndToken(t *testing.T) {
 	}
 
 	in := plugin.TapFilesInput{
-		Project: "gambit", Version: "1.4.0",
+		ConfigDir: ".letsgo",
+		Project:   "gambit", Version: "1.4.0",
 		Artifacts: []plugin.TapArtifact{
 			{
 				Archive: "gambit-gui_1.4.0_darwin_arm64.tar.gz", Variant: "gui", OS: "darwin", Arch: "arm64",
@@ -250,7 +252,7 @@ func TestAnswerTapFilesUsesTheConfiguredVariantAndToken(t *testing.T) {
 func TestAnswerTapFilesRefusesWhatItCannotBuild(t *testing.T) {
 	t.Chdir(t.TempDir())
 
-	_, err := answerTapFiles(plugin.TapFilesInput{Project: "gambit", Version: "1.4.0"})
+	_, err := answerTapFiles(plugin.TapFilesInput{Project: "gambit", Version: "1.4.0", ConfigDir: ".letsgo"})
 	if err == nil || !strings.Contains(err.Error(), "no macOS build") {
 		t.Errorf("err = %v, want a refusal naming the missing macOS build", err)
 	}

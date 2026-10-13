@@ -37,8 +37,6 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
 	"errors"
 	"flag"
 	"fmt"
@@ -92,50 +90,35 @@ func answerTapFiles(in plugin.TapFilesInput) (plugin.TapFilesOutput, error) {
 // entirely is not an error: a release with one darwin build and no variant
 // needs neither directive.
 func readPluginConfig(configDir string) (pluginConfig, error) {
-	data, cfgPath, err := plugin.ReadConfig(configDir, "cask")
+	file, err := plugin.LoadConfig(configDir, "cask")
 	if errors.Is(err, fs.ErrNotExist) {
 		return pluginConfig{}, nil
 	}
 	if err != nil {
-		return pluginConfig{}, fmt.Errorf("reading %s: %w", cfgPath, err)
+		return pluginConfig{}, fmt.Errorf("reading the cask config: %w", err)
 	}
 
 	var cfg pluginConfig
 	seen := map[string]bool{}
 
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	for line := 1; scanner.Scan(); line++ {
-		text := strings.TrimSpace(scanner.Text())
-		if before, _, ok := strings.Cut(text, "//"); ok {
-			text = strings.TrimSpace(before)
+	for _, l := range file.Lines {
+		if len(l.Args) != 1 {
+			return pluginConfig{}, file.Errorf(l, "expected `variant <name>` or `token <name>`, got %q",
+				strings.Join(append([]string{l.Keyword}, l.Args...), " "))
 		}
-		if text == "" {
-			continue
+		if seen[l.Keyword] {
+			return pluginConfig{}, file.Errorf(l, "%s is already set", l.Keyword)
 		}
+		seen[l.Keyword] = true
 
-		fields := strings.Fields(text)
-		if len(fields) != 2 {
-			return pluginConfig{}, fmt.Errorf("%s:%d: expected `variant <name>` or `token <name>`, got %q",
-				cfgPath, line, text)
-		}
-
-		directive, value := fields[0], fields[1]
-		if seen[directive] {
-			return pluginConfig{}, fmt.Errorf("%s:%d: %s is already set", cfgPath, line, directive)
-		}
-		seen[directive] = true
-
-		switch directive {
+		switch l.Keyword {
 		case "variant":
-			cfg.Variant = value
+			cfg.Variant = l.Args[0]
 		case "token":
-			cfg.Token = value
+			cfg.Token = l.Args[0]
 		default:
-			return pluginConfig{}, fmt.Errorf("%s:%d: unknown directive %q", cfgPath, line, directive)
+			return pluginConfig{}, file.Errorf(l, "unknown directive %q", l.Keyword)
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		return pluginConfig{}, fmt.Errorf("%s: %w", cfgPath, err)
 	}
 	return cfg, nil
 }
