@@ -389,46 +389,55 @@ func buildsOf(calls [][]string) [][]string {
 	return out
 }
 
-// The builder is created once, as a docker-container builder, and an
-// existing one is used as it is.
-func TestEnsureBuilder(t *testing.T) {
-	for _, tc := range []struct {
-		name               string
-		exists, createFail bool
-		wantCreate, fails  bool
-	}{
-		{"already there", true, false, false, false},
-		{"created on first use", false, false, true, false},
-		{"cannot be created", false, true, true, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var created []string
-			orig := docker
-			docker = func(_ context.Context, _ string, _ []string, args ...string) error {
-				switch args[1] {
-				case "inspect":
-					if !tc.exists {
-						return os.ErrNotExist
-					}
-				case "create":
-					created = args
-					if tc.createFail {
-						return os.ErrPermission
-					}
-				}
-				return nil
+// fakeBuilder stands in for docker's buildx builder commands: inspect finds
+// the builder when it exists, and create records its arguments and fails when
+// told to. It returns where the create call's arguments land.
+func fakeBuilder(t *testing.T, exists, createFails bool) *[]string {
+	t.Helper()
+	var created []string
+	orig := docker
+	docker = func(_ context.Context, _ string, _ []string, args ...string) error {
+		switch {
+		case args[1] == "inspect" && !exists:
+			return os.ErrNotExist
+		case args[1] == "create":
+			created = args
+			if createFails {
+				return os.ErrPermission
 			}
-			t.Cleanup(func() { docker = orig })
+		}
+		return nil
+	}
+	t.Cleanup(func() { docker = orig })
+	return &created
+}
 
-			err := ensureBuilder(context.Background(), "/usr/bin/docker", nil)
-			if (err != nil) != tc.fails {
-				t.Errorf("err = %v", err)
-			}
-			if got := strings.Join(created, " "); (got != "") != tc.wantCreate ||
-				(tc.wantCreate && got != "buildx create --name letsgo-docker --driver docker-container") {
-				t.Errorf("create = %q", got)
-			}
-		})
+// An existing builder is used as it is.
+func TestEnsureBuilderUsesAnExistingBuilder(t *testing.T) {
+	created := fakeBuilder(t, true, false)
+	if err := ensureBuilder(context.Background(), "/usr/bin/docker", nil); err != nil {
+		t.Fatal(err)
+	}
+	if *created != nil {
+		t.Errorf("created %v over an existing builder", *created)
+	}
+}
+
+// A missing builder is created once, as a docker-container builder.
+func TestEnsureBuilderCreatesAMissingBuilder(t *testing.T) {
+	created := fakeBuilder(t, false, false)
+	if err := ensureBuilder(context.Background(), "/usr/bin/docker", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(*created, " "); got != "buildx create --name letsgo-docker --driver docker-container" {
+		t.Errorf("create = %q", got)
+	}
+}
+
+func TestEnsureBuilderReportsAFailedCreate(t *testing.T) {
+	fakeBuilder(t, false, true)
+	if err := ensureBuilder(context.Background(), "/usr/bin/docker", nil); err == nil {
+		t.Error("a builder that could not be created was reported as ready")
 	}
 }
 
