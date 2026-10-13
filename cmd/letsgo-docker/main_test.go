@@ -296,3 +296,79 @@ func TestBuildEnvFixesPath(t *testing.T) {
 		t.Error("a commit date that is not RFC 3339 was accepted")
 	}
 }
+
+// Without the override, the first system directory holding docker wins.
+func TestFindDockerLooksInTheSystemDirectories(t *testing.T) {
+	t.Setenv("LETSGO_DOCKER", "")
+	want := fakeExecutable(t)
+	orig := systemDirs
+	systemDirs = []string{t.TempDir(), filepath.Dir(want)}
+	t.Cleanup(func() { systemDirs = orig })
+
+	if got, err := findDocker(); err != nil || got != want {
+		t.Errorf("findDocker = %q, %v, want %q", got, err, want)
+	}
+}
+
+// The real build runs the docker it was given, with the arguments and
+// environment it was given, and keeps stdout for the hook's answer.
+func TestDockerRunsTheGivenBinary(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake docker is a shell script")
+	}
+	dir := t.TempDir()
+	record := filepath.Join(dir, "args")
+	bin := filepath.Join(dir, "docker")
+	script := "#!/bin/sh\necho \"$@ $SOURCE_DATE_EPOCH\" > " + record + "\n"
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := docker(context.Background(), bin, []string{"SOURCE_DATE_EPOCH=42"}, "buildx", "build"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(record)
+	if err != nil || strings.TrimSpace(string(got)) != "buildx build 42" {
+		t.Errorf("docker saw %q, %v", got, err)
+	}
+
+	failing := filepath.Join(dir, "failing")
+	if err := os.WriteFile(failing, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := docker(context.Background(), failing, nil, "buildx"); err == nil {
+		t.Error("a failed build reported success")
+	}
+}
+
+func TestAnswerImagesStopsWithoutDocker(t *testing.T) {
+	t.Setenv("LETSGO_DOCKER", "relative/docker")
+	dir := repoWith(t, "", "Dockerfile")
+	_, err := answerImages(plugin.ImagesInput{ConfigDir: dir, Output: t.TempDir(), Context: t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "absolute path") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestAnswerImagesRefusesABadCommitDate(t *testing.T) {
+	recordDocker(t)
+	dir := repoWith(t, "", "Dockerfile")
+	_, err := answerImages(plugin.ImagesInput{ConfigDir: dir, Output: t.TempDir(), Context: t.TempDir(), Date: "soon"})
+	if err == nil || !strings.Contains(err.Error(), "RFC 3339") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestReadConfigRefusesShortOrUnparseableLines(t *testing.T) {
+	for mod, want := range map[string]string{
+		"image fixer\n":            "expected `image <name> <setting> <value>`",
+		"image fixer target a b\n": "expected one value for target",
+		"image fixer (\n":          "docker config",
+		"image fixer platform\n":   "expected `image <name> <setting> <value>`",
+	} {
+		dir := repoWith(t, mod, "Dockerfile")
+		if _, err := readConfig(dir, filepath.Dir(dir)); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: err = %v, want one mentioning %q", mod, err, want)
+		}
+	}
+}
