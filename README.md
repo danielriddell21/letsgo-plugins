@@ -8,6 +8,7 @@ some repositories need at release time and most do not.
 | `letsgo-multi` | `archive-layout` | ships every command in one archive per target, and one formula that installs them all |
 | `letsgo-env` | `ldflags` | compiles values from the environment into the binary |
 | `letsgo-cask` | `tap-files` | writes a Homebrew cask for a macOS build, alongside the formula |
+| `letsgo-docker` | `images` | builds container images from Dockerfiles: `./Dockerfile` as the release image with no config, more with image blocks |
 | `letsgo-tfplan` | none (companion) | writes a letsgo plan file as `terraform show -json`, or as a markdown job summary |
 
 ```sh
