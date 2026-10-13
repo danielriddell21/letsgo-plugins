@@ -57,6 +57,13 @@
 // SOURCE_DATE_EPOCH is set to the commit's time for every build, which buildx
 // uses for the image's timestamps.
 //
+// # The builder
+//
+// Images are built with a buildx builder named letsgo-docker, using the
+// docker-container driver, which is created on first use. docker's default
+// builder cannot export an OCI layout unless the daemon uses the containerd
+// image store, which a GitHub runner does not by default.
+//
 // # Finding docker
 //
 // docker is looked for in /usr/bin, /bin, /usr/sbin and /sbin, never on PATH.
@@ -72,11 +79,13 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/danielriddell21/letsgo/plugin"
@@ -150,6 +159,12 @@ var docker = func(ctx context.Context, bin string, env []string, args ...string)
 // answerImages builds every image images.mod names, one at a time, and
 // answers with where each layout was written.
 func answerImages(in plugin.ImagesInput) (plugin.ImagesOutput, error) {
+	// letsgo stops a hook past its timeout by killing its process group; a
+	// signal from anyone else, an interrupted terminal most often, stops the
+	// build the same way rather than leaving it running.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	root := filepath.Dir(in.ConfigDir)
 	images, err := readConfig(in.ConfigDir, root)
 	if err != nil {
@@ -165,10 +180,14 @@ func answerImages(in plugin.ImagesInput) (plugin.ImagesOutput, error) {
 		return plugin.ImagesOutput{}, err
 	}
 
+	if err := ensureBuilder(ctx, bin, env); err != nil {
+		return plugin.ImagesOutput{}, err
+	}
+
 	out := plugin.ImagesOutput{Images: make([]plugin.OutputImage, 0, len(images))}
 	for _, img := range images {
 		dest := filepath.Join(in.Output, img.Name)
-		if err := docker(context.Background(), bin, env, buildArgs(img, root, in.Context, dest)...); err != nil {
+		if err := docker(ctx, bin, env, buildArgs(img, root, in.Context, dest)...); err != nil {
 			return plugin.ImagesOutput{}, fmt.Errorf("building image %s: %w", img.Name, err)
 		}
 		out.Images = append(out.Images, plugin.OutputImage{Suffix: img.Suffix, Layout: dest})
@@ -176,10 +195,31 @@ func answerImages(in plugin.ImagesInput) (plugin.ImagesOutput, error) {
 	return out, nil
 }
 
+// builder is the buildx builder every image is built with.
+//
+// docker's own default builder, the "docker" driver, can export an OCI layout
+// only when the daemon uses the containerd image store, which a GitHub runner
+// does not by default. A docker-container builder always can. It is named
+// rather than made the default, so a machine's own choice of builder is left
+// as it was.
+const builder = "letsgo-docker"
+
+// ensureBuilder creates the builder if this machine does not have it yet.
+func ensureBuilder(ctx context.Context, bin string, env []string) error {
+	if docker(ctx, bin, env, "buildx", "inspect", builder) == nil {
+		return nil
+	}
+	if err := docker(ctx, bin, env, "buildx", "create", "--name", builder, "--driver", "docker-container"); err != nil {
+		return fmt.Errorf("creating the %s buildx builder: %w", builder, err)
+	}
+	return nil
+}
+
 // buildArgs is the buildx command line for one image.
 func buildArgs(img image, root, contextDir, dest string) []string {
 	args := []string{
 		"buildx", "build",
+		"--builder", builder,
 		"--file", filepath.Join(root, img.Dockerfile),
 		"--platform", strings.Join(img.Platforms, ","),
 		"--build-context", "letsgo=" + contextDir,
@@ -331,6 +371,11 @@ func defaults(root string) ([]image, error) {
 
 // settle fills in an image's defaults and checks its Dockerfile is there.
 func settle(img *image, root string) error {
+	if img.Suffix != "" {
+		if err := plugin.CheckSuffix(img.Suffix); err != nil {
+			return fmt.Errorf("image %s: %w", img.Name, err)
+		}
+	}
 	if img.Dockerfile == "" {
 		img.Dockerfile = "Dockerfile"
 	}

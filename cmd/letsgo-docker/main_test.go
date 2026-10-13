@@ -190,12 +190,14 @@ func TestAnswerImagesBuildsEachImageIntoTheOutput(t *testing.T) {
 		t.Errorf("answer = %+v, want %+v", out.Images, want)
 	}
 
-	if len(*calls) != 2 {
-		t.Fatalf("docker ran %d times, want 2", len(*calls))
+	builds := buildsOf(*calls)
+	if len(builds) != 2 {
+		t.Fatalf("docker built %d times, want 2: %v", len(builds), *calls)
 	}
-	fixer := strings.Join((*calls)[0], " ")
+	fixer := strings.Join(builds[0], " ")
 	for _, part := range []string{
 		"buildx build",
+		"--builder letsgo-docker",
 		"--file " + filepath.Join(root, "Dockerfile"),
 		"--platform linux/arm64",
 		"--build-context letsgo=" + contextDir,
@@ -207,7 +209,7 @@ func TestAnswerImagesBuildsEachImageIntoTheOutput(t *testing.T) {
 			t.Errorf("build of fixer is missing %q:\n%s", part, fixer)
 		}
 	}
-	if debug := strings.Join((*calls)[1], " "); strings.Contains(debug, "--target") {
+	if debug := strings.Join(builds[1], " "); strings.Contains(debug, "--target") {
 		t.Errorf("an image with no target passed one: %s", debug)
 	}
 }
@@ -216,7 +218,10 @@ func TestAnswerImagesStopsAtTheFirstFailedBuild(t *testing.T) {
 	var built int
 	orig := docker
 	t.Setenv("LETSGO_DOCKER", fakeExecutable(t))
-	docker = func(context.Context, string, []string, ...string) error {
+	docker = func(_ context.Context, _ string, _ []string, args ...string) error {
+		if args[1] != "build" {
+			return nil
+		}
 		built++
 		return os.ErrPermission
 	}
@@ -370,5 +375,91 @@ func TestReadConfigRefusesShortOrUnparseableLines(t *testing.T) {
 		if _, err := readConfig(dir, filepath.Dir(dir)); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%q: err = %v, want one mentioning %q", mod, err, want)
 		}
+	}
+}
+
+// buildsOf keeps the calls that built an image, leaving out the builder's.
+func buildsOf(calls [][]string) [][]string {
+	var out [][]string
+	for _, c := range calls {
+		if len(c) > 1 && c[1] == "build" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// The builder is created once, as a docker-container builder, and an
+// existing one is used as it is.
+func TestEnsureBuilder(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		exists, createFail bool
+		wantCreate, fails  bool
+	}{
+		{"already there", true, false, false, false},
+		{"created on first use", false, false, true, false},
+		{"cannot be created", false, true, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var created []string
+			orig := docker
+			docker = func(_ context.Context, _ string, _ []string, args ...string) error {
+				switch args[1] {
+				case "inspect":
+					if !tc.exists {
+						return os.ErrNotExist
+					}
+				case "create":
+					created = args
+					if tc.createFail {
+						return os.ErrPermission
+					}
+				}
+				return nil
+			}
+			t.Cleanup(func() { docker = orig })
+
+			err := ensureBuilder(context.Background(), "/usr/bin/docker", nil)
+			if (err != nil) != tc.fails {
+				t.Errorf("err = %v", err)
+			}
+			if got := strings.Join(created, " "); (got != "") != tc.wantCreate ||
+				(tc.wantCreate && got != "buildx create --name letsgo-docker --driver docker-container") {
+				t.Errorf("create = %q", got)
+			}
+		})
+	}
+}
+
+// A suffix that could spell another version's tag is refused before docker
+// runs, by the same rule letsgo holds the answer to.
+func TestReadConfigRefusesASuffixThatSpellsAVersion(t *testing.T) {
+	for _, suffix := range []string{"-rc.1", ".4", "fixer"} {
+		dir := repoWith(t, "image a suffix "+suffix+"\n", "Dockerfile")
+		if _, err := readConfig(dir, filepath.Dir(dir)); err == nil || !strings.Contains(err.Error(), "another version's tag") {
+			t.Errorf("suffix %q: err = %v", suffix, err)
+		}
+	}
+}
+
+// A builder that cannot be created stops the hook before any build.
+func TestAnswerImagesStopsWithoutABuilder(t *testing.T) {
+	t.Setenv("LETSGO_DOCKER", fakeExecutable(t))
+	orig := docker
+	var builds int
+	docker = func(_ context.Context, _ string, _ []string, args ...string) error {
+		if args[1] == "build" {
+			builds++
+			return nil
+		}
+		return os.ErrPermission
+	}
+	t.Cleanup(func() { docker = orig })
+
+	dir := repoWith(t, "", "Dockerfile")
+	_, err := answerImages(plugin.ImagesInput{ConfigDir: dir, Output: t.TempDir(), Context: t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "letsgo-docker buildx builder") || builds != 0 {
+		t.Errorf("err = %v, builds = %d", err, builds)
 	}
 }
