@@ -124,15 +124,20 @@ func convert(f *plan.File) (*document, error) {
 			return nil, fmt.Errorf("the plan has an action on %s with the unknown op %q", a.Target, a.Op)
 		}
 
-		typ := resourceType(a.Kind)
+		row, ok := kinds[a.Kind]
+		if !ok {
+			return nil, fmt.Errorf("the plan has an action on %s of the unknown kind %q", a.Target, a.Kind)
+		}
+
+		typ := row.resource
 		ch := change{Actions: []string{verb}, AfterUnknown: map[string]any{}}
 		if a.Op != plan.Add {
-			ch.Before = state(f, a, a.Observed, false)
+			ch.Before = row.state(f, a, a.Observed, false)
 		}
 		if a.Op != plan.Remove {
-			ch.After = state(f, a, a.Planned, true)
-			if unknown(a) {
-				ch.AfterUnknown[attributeName(a.Kind)] = true
+			ch.After = row.state(f, a, a.Planned, true)
+			if row.unknown(a) {
+				ch.AfterUnknown[row.attribute] = true
 			}
 		}
 
@@ -147,15 +152,34 @@ func convert(f *plan.File) (*document, error) {
 	return doc, nil
 }
 
-// resourceType names a kind the way Terraform names a resource type.
-func resourceType(kind plan.Kind) string {
-	switch kind {
-	case plan.KindTap:
-		return "letsgo_tap_file"
-	case plan.KindImage:
-		return "letsgo_image_tag"
-	}
-	return "letsgo_" + string(kind)
+// kindRow is what one kind of plan target becomes in the export. Adding a kind
+// in core is adding a row here, and nowhere else: an action whose kind has no
+// row fails the export, instead of coming out looking right with the wrong
+// resource type.
+type kindRow struct {
+	// resource is how Terraform names the resource type.
+	resource string
+
+	// attribute is what the kind calls its one fingerprint, empty when it has
+	// none.
+	attribute string
+
+	// release marks the kind that carries its tag where the others carry a
+	// fingerprint, and, in a yank plan, whether it is retracted.
+	release bool
+}
+
+// kinds has one row per plan.Kind, and TestEveryKindHasARow holds it to
+// plan.Kinds. The proxy kind is declared by core but never produced by it; its
+// row passes whatever fingerprint it is given through, as any other kind with
+// one does.
+var kinds = map[plan.Kind]kindRow{
+	plan.KindRelease: {resource: "letsgo_release", release: true},
+	plan.KindAsset:   {resource: "letsgo_asset", attribute: "sha256"},
+	plan.KindTap:     {resource: "letsgo_tap_file", attribute: "blob"},
+	plan.KindImage:   {resource: "letsgo_image_tag", attribute: "digest"},
+	plan.KindProxy:   {resource: "letsgo_proxy", attribute: "fingerprint"},
+	plan.KindGoMod:   {resource: "letsgo_gomod", attribute: "blob"},
 }
 
 // address is <type>.<slug>. Two targets can slug alike ("a.b" and "a_b"), and
@@ -177,32 +201,19 @@ func address(typ, target string, taken map[string]bool) string {
 	return candidate
 }
 
-// attributeName is what a kind calls its one fingerprint.
-func attributeName(kind plan.Kind) string {
-	switch kind {
-	case plan.KindAsset:
-		return "sha256"
-	case plan.KindTap, plan.KindGoMod:
-		return "blob"
-	case plan.KindImage:
-		return "digest"
-	}
-	return "fingerprint"
-}
-
 // unknown reports whether an action's planned fingerprint is one the plan
 // could not know yet: something is to be written, the kind has a fingerprint,
 // and none was recorded. A release has none to record.
-func unknown(a plan.Action) bool {
-	return a.Planned == "" && a.Kind != plan.KindRelease && (a.Op == plan.Add || a.Op == plan.Change)
+func (r kindRow) unknown(a plan.Action) bool {
+	return r.attribute != "" && a.Planned == "" && (a.Op == plan.Add || a.Op == plan.Change)
 }
 
 // state is one side of an action as an attribute map. after says which side,
 // because a yank plan's release is retracted only on the far side of it.
-func state(f *plan.File, a plan.Action, fingerprint string, after bool) map[string]any {
+func (r kindRow) state(f *plan.File, a plan.Action, fingerprint string, after bool) map[string]any {
 	m := map[string]any{}
 
-	if a.Kind == plan.KindRelease {
+	if r.release {
 		m["tag"] = a.Target
 		if f.Kind == plan.FileKindYank {
 			m["retracted"] = after || a.Op == plan.Keep
@@ -210,14 +221,13 @@ func state(f *plan.File, a plan.Action, fingerprint string, after bool) map[stri
 		return m
 	}
 
-	if fingerprint == "" {
+	if fingerprint == "" || r.attribute == "" {
 		return m
 	}
-	name := attributeName(a.Kind)
-	if algorithm, value, ok := strings.Cut(fingerprint, ":"); ok && algorithm == name {
+	if algorithm, value, ok := strings.Cut(fingerprint, ":"); ok && algorithm == r.attribute {
 		fingerprint = value
 	}
-	m[name] = fingerprint
+	m[r.attribute] = fingerprint
 	return m
 }
 
