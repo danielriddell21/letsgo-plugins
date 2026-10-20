@@ -331,3 +331,62 @@ func TestRunReportsAWriteFailure(t *testing.T) {
 		t.Errorf("run = %v", err)
 	}
 }
+
+// A kind core adds without a row here would export as the wrong thing and look
+// right, so the table has to name every kind core declares, and nothing core
+// does not.
+func TestEveryKindHasARow(t *testing.T) {
+	declared := map[plan.Kind]bool{}
+	for _, k := range plan.Kinds {
+		declared[k] = true
+		row, ok := kinds[k]
+		if !ok {
+			t.Errorf("plan.Kind %q has no row in kinds", k)
+			continue
+		}
+		if !strings.HasPrefix(row.resource, "letsgo_") {
+			t.Errorf("%q resource = %q, want a letsgo_ type", k, row.resource)
+		}
+		if row.release == (row.attribute != "") {
+			t.Errorf("%q: a kind carries its tag or has a fingerprint, not both nor neither: %+v", k, row)
+		}
+	}
+	for k := range kinds {
+		if !declared[k] {
+			t.Errorf("kinds has a row for %q, which core does not declare", k)
+		}
+	}
+}
+
+// One resource type per kind: two kinds sharing a type would be
+// indistinguishable to whatever reads the export.
+func TestResourceTypesAreUnique(t *testing.T) {
+	seen := map[string]plan.Kind{}
+	for k, row := range kinds {
+		if other, dup := seen[row.resource]; dup {
+			t.Errorf("%q and %q are both %s", other, k, row.resource)
+		}
+		seen[row.resource] = k
+	}
+}
+
+func TestAnUnknownKindFailsTheExport(t *testing.T) {
+	f := releasePlan(plan.Action{Op: plan.Add, Kind: "mystery", Target: "x", Planned: "sha256:aa"})
+	if _, err := convert(f); err == nil || !strings.Contains(err.Error(), `unknown kind "mystery"`) {
+		t.Fatalf("convert err = %v, want the unknown kind named", err)
+	}
+
+	path := filepath.Join(t.TempDir(), "kind.plan")
+	if err := f.Write(path); err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range []string{"json", "md"} {
+		var out bytes.Buffer
+		if err := run([]string{command, path}, &out); err == nil || !strings.Contains(err.Error(), "unknown kind") {
+			t.Errorf("%s: err = %v, want an unknown kind", command, err)
+		}
+		if out.Len() != 0 {
+			t.Errorf("%s wrote %q despite failing", command, out.String())
+		}
+	}
+}
