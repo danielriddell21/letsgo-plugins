@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -240,7 +241,7 @@ func TestAnswerImagesStopsAtTheFirstFailedBuild(t *testing.T) {
 // fakeExecutable is an executable file to name in LETSGO_DOCKER.
 func fakeExecutable(t *testing.T) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "docker")
+	path := filepath.Join(t.TempDir(), dockerName)
 	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -256,14 +257,20 @@ func TestFindDockerTakesAnAbsoluteOverride(t *testing.T) {
 }
 
 func TestFindDockerRefusesAnOverrideItCannotTrust(t *testing.T) {
-	notExecutable := filepath.Join(t.TempDir(), "docker")
-	if err := os.WriteFile(notExecutable, nil, 0o600); err != nil {
-		t.Fatal(err)
+	refusals := map[string]string{
+		"docker":    "absolute path",
+		t.TempDir(): "not an executable",
 	}
-	for value, want := range map[string]string{
-		"docker":      "absolute path",
-		notExecutable: "not an executable",
-	} {
+	// Windows has no execute bit, so only elsewhere is a regular file refused
+	// for lacking one.
+	if runtime.GOOS != "windows" {
+		notExecutable := filepath.Join(t.TempDir(), "docker")
+		if err := os.WriteFile(notExecutable, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		refusals[notExecutable] = "not an executable"
+	}
+	for value, want := range refusals {
 		t.Setenv("LETSGO_DOCKER", value)
 		if _, err := findDocker(); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("LETSGO_DOCKER=%q: err = %v, want one mentioning %q", value, err, want)
@@ -470,5 +477,54 @@ func TestAnswerImagesStopsWithoutABuilder(t *testing.T) {
 	_, err := answerImages(plugin.ImagesInput{ConfigDir: dir, Output: t.TempDir(), Context: t.TempDir()})
 	if err == nil || !strings.Contains(err.Error(), "letsgo-docker buildx builder") || builds != 0 {
 		t.Errorf("err = %v, builds = %d", err, builds)
+	}
+}
+
+// Windows has no execute bit, so any regular file is runnable there, as it is
+// for letsgo's own probe; a directory never is.
+func TestRunnableFollowsThePlatform(t *testing.T) {
+	for _, tc := range []struct {
+		goos string
+		mode fs.FileMode
+		want bool
+	}{
+		{"linux", 0o755, true},
+		{"linux", 0o644, false},
+		{"darwin", 0o700, true},
+		{"windows", 0o666, true},
+		{"windows", 0o444, true},
+		{"windows", fs.ModeDir | 0o777, false},
+		{"linux", fs.ModeSymlink | 0o777, false},
+	} {
+		if got := runnable(tc.goos, tc.mode); got != tc.want {
+			t.Errorf("runnable(%s, %v) = %v, want %v", tc.goos, tc.mode, got, tc.want)
+		}
+	}
+}
+
+// On Windows docker is docker.exe, looked for where letsgo's probe looks:
+// directories that need elevation to write to.
+func TestWindowsLooksForDockerExeInTheSystemDirectories(t *testing.T) {
+	if got := exeFor("windows", "docker"); got != "docker.exe" {
+		t.Errorf("exeFor(windows) = %q", got)
+	}
+	if got := exeFor("linux", "docker"); got != "docker" {
+		t.Errorf("exeFor(linux) = %q", got)
+	}
+
+	env := map[string]string{"SystemRoot": `D:\Win`, "ProgramFiles": `D:\PF`}
+	got := systemDirsFor("windows", func(k string) string { return env[k] })
+	want := []string{
+		filepath.Join(`D:\Win`, "system32"), `D:\Win`,
+		filepath.Join(`D:\PF`, "Git", "cmd"), filepath.Join(`D:\PF`, "Git", "bin"),
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("systemDirsFor(windows) = %q, want %q", got, want)
+	}
+	if got := systemDirsFor("windows", func(string) string { return "" }); got[1] != `C:\Windows` {
+		t.Errorf("without SystemRoot, dirs = %q, want %q second", got, `C:\Windows`)
+	}
+	if got := systemDirsFor("linux", nil); !slices.Equal(got, []string{"/usr/bin", "/bin", "/usr/sbin", "/sbin"}) {
+		t.Errorf("systemDirsFor(linux) = %q", got)
 	}
 }

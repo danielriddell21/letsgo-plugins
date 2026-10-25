@@ -110,14 +110,45 @@ type image struct {
 var namePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
 
 // dockerEnv names docker's absolute path, for a machine where it is not in
-// a system directory: Docker Desktop's /usr/local/bin/docker on macOS.
+// a system directory: Docker Desktop's /usr/local/bin/docker on macOS, or its
+// docker.exe under Program Files on Windows.
 const dockerEnv = "LETSGO_DOCKER"
 
 // systemDirs are the directories docker is looked for in without
 // dockerEnv: ones an ordinary user cannot write to. PATH is never consulted,
 // because whoever controls PATH would choose what runs, and letsgo makes the
 // same choice when it probes for docker while planning.
-var systemDirs = []string{"/usr/bin", "/bin", "/usr/sbin", "/sbin"}
+var systemDirs = systemDirsFor(runtime.GOOS, os.Getenv)
+
+// systemDirsFor is systemDirs for a named platform and environment, the same
+// directories letsgo's own probe searches, so the plan and the build agree on
+// which docker runs. On Windows they need elevation to write to.
+func systemDirsFor(goos string, getenv func(string) string) []string {
+	if goos == "windows" {
+		root := getenv("SystemRoot")
+		if root == "" {
+			root = `C:\Windows`
+		}
+		dirs := []string{filepath.Join(root, "system32"), root}
+		for _, key := range []string{"ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"} {
+			if base := getenv(key); base != "" {
+				dirs = append(dirs, filepath.Join(base, "Git", "cmd"), filepath.Join(base, "Git", "bin"))
+			}
+		}
+		return dirs
+	}
+	return []string{"/usr/bin", "/bin", "/usr/sbin", "/sbin"}
+}
+
+// dockerName is docker's file name in a system directory.
+var dockerName = exeFor(runtime.GOOS, "docker")
+
+func exeFor(goos, name string) string {
+	if goos == "windows" {
+		return name + ".exe"
+	}
+	return name
+}
 
 // findDocker is docker's absolute path: dockerEnv's, or the first in
 // systemDirs.
@@ -132,17 +163,26 @@ func findDocker() (string, error) {
 		return value, nil
 	}
 	for _, dir := range systemDirs {
-		if candidate := filepath.Join(dir, "docker"); executable(candidate) {
+		if candidate := filepath.Join(dir, dockerName); executable(candidate) {
 			return candidate, nil
 		}
 	}
-	return "", fmt.Errorf("docker is not in %s; set %s to its absolute path",
-		strings.Join(systemDirs, ", "), dockerEnv)
+	return "", fmt.Errorf("%s is not in %s; set %s to its absolute path",
+		dockerName, strings.Join(systemDirs, ", "), dockerEnv)
 }
 
 func executable(path string) bool {
 	info, err := os.Stat(path)
-	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
+	return err == nil && runnable(runtime.GOOS, info.Mode())
+}
+
+// runnable is whether a file of this mode can be run on goos. Windows has no
+// execute bit, so any regular file counts there, as it does for letsgo.
+func runnable(goos string, mode fs.FileMode) bool {
+	if !mode.IsRegular() {
+		return false
+	}
+	return goos == "windows" || mode.Perm()&0o111 != 0
 }
 
 // docker runs one buildx build with the docker at bin. A variable so tests
