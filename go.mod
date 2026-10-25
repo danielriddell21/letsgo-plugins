@@ -4,5 +4,5 @@ go 1.27.1
 
 require (
 	github.com/danielriddell21/letsgo v1.0.0
-	github.com/danielriddell21/unum v1.9.2
+	github.com/danielriddell21/unum v1.9.5
 )
