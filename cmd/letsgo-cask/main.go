@@ -27,7 +27,11 @@
 // # Standalone
 //
 // letsgo-cask also still reads a finished release on its own, for a
-// repository that wants a cask without pinning the hook:
+// repository that wants a cask without pinning the hook. It builds the same
+// input the hook is handed, from the manifest, and renders it with the same
+// code, so a variant is selected by the Variant letsgo recorded for each
+// archive. A manifest from before letsgo v0.7.0 records none, so it is
+// refused if that leaves two macOS builds for one architecture:
 //
 //	letsgo-cask --repo you/gambit --variant gui dist/letsgo.json
 //
@@ -39,7 +43,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"net/url"
 	"os"
 	"strings"
 
@@ -56,16 +59,6 @@ func main() {
 		fmt.Fprintln(os.Stderr, "letsgo-cask:", err)
 		os.Exit(1)
 	}
-}
-
-// executableNames returns the archive's binaries, whichever way it spells them.
-func executableNames(a coremanifest.Artifact) []string {
-	bins := a.Executables()
-	out := make([]string, 0, len(bins))
-	for _, b := range bins {
-		out = append(out, b.Name)
-	}
-	return out
 }
 
 func run(args []string, out *os.File) error {
@@ -90,18 +83,24 @@ func run(args []string, out *os.File) error {
 		return fmt.Errorf("--repo is required: letsgo.json does not record where it was published")
 	}
 
-	m, err := read(fs.Arg(0))
+	// Strict, because a cask names exact archives and digests: a schema this
+	// build does not know is a reason to stop, not to render what decoded.
+	m, err := coremanifest.ReadStrict(fs.Arg(0))
 	if err != nil {
-		return err
+		return fmt.Errorf("%s: %w", fs.Arg(0), err)
 	}
 
-	c, err := build(m, *repo, *variant, caskFields{
-		Token:    *token,
-		Desc:     *desc,
-		Homepage: *homepage,
-		License:  *license,
-		Caveats:  *caveats,
-	})
+	// The hook's question, asked about a release that already happened. What
+	// the manifest cannot supply describes the program rather than its
+	// archives, so it comes from the command line.
+	in := plugin.TapFilesInputFromManifest(m, *repo, "", *caveats)
+	in.Description = *desc
+	in.License = *license
+	if *homepage != "" {
+		in.Homepage = *homepage
+	}
+
+	c, err := caskFromHookInput(in, pluginConfig{Variant: *variant, Token: *token})
 	if err != nil {
 		return err
 	}
@@ -154,99 +153,4 @@ func permute(fs *flag.FlagSet, args []string) []string {
 		}
 	}
 	return append(flags, operands...)
-}
-
-func read(path string) (*coremanifest.Manifest, error) {
-	m, err := coremanifest.Read(path)
-	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", path, err)
-	}
-	if m.Schema != 1 {
-		return nil, fmt.Errorf("%s has schema %d, which this letsgo-cask does not understand", path, m.Schema)
-	}
-	return m, nil
-}
-
-// caskFields are the values a release cannot supply: they describe the
-// program rather than the artifacts, so they come from the command line.
-type caskFields struct {
-	Token    string
-	Desc     string
-	Homepage string
-	License  string
-	Caveats  string
-}
-
-func build(m *coremanifest.Manifest, repo, variant string, f caskFields) (*cask, error) {
-	tag := m.Tag
-	if tag == "" {
-		tag = "v" + m.Version
-	}
-
-	// A variant suffixes the archive's name, which is how its artifacts are
-	// told apart from the release's own.
-	want := m.Project
-	if variant != "" {
-		want = m.Project + "-" + variant
-	}
-
-	c := &cask{
-		Token:    f.Token,
-		Version:  m.Version,
-		Name:     m.Project,
-		Desc:     f.Desc,
-		Homepage: f.Homepage,
-		License:  f.License,
-		Caveats:  f.Caveats,
-	}
-	if c.Homepage == "" {
-		c.Homepage = "https://github.com/" + repo
-	}
-
-	for _, a := range m.Artifacts {
-		if a.OS != "darwin" || coremanifest.BaseName(a.Name, m.Version, a.OS, a.Arch) != want {
-			continue
-		}
-
-		d := &download{
-			URL:    downloadURL(repo, tag, a.Name),
-			SHA256: a.SHA256,
-		}
-		switch a.Arch {
-		case "arm64":
-			c.ARM = d
-		case "amd64":
-			c.Intel = d
-		default:
-			continue
-		}
-		c.Binaries = merge(c.Binaries, executableNames(a))
-	}
-
-	if c.ARM == nil && c.Intel == nil {
-		return nil, fmt.Errorf(
-			"the release has no macOS archive called %s;\n"+
-				"  a cask installs a macOS build, and this release published none under that name", want)
-	}
-	if len(c.Binaries) == 0 {
-		return nil, fmt.Errorf("the archives name no binaries, so the cask has nothing to install")
-	}
-	if c.Token == "" {
-		c.Token = want
-	}
-	return c, nil
-}
-
-// downloadURL is where the forge serves a release asset from. A scoped tag
-// keeps its slashes, which the forge reads as directory segments; every
-// segment, and the asset's name, is escaped so a character the URL cannot
-// carry does not change which file it names. It is the URL core builds for
-// the hook path.
-func downloadURL(repo, tag, name string) string {
-	segments := strings.Split(tag, "/")
-	for i, segment := range segments {
-		segments[i] = url.PathEscape(segment)
-	}
-	return fmt.Sprintf("https://github.com/%s/releases/download/%s/%s",
-		repo, strings.Join(segments, "/"), url.PathEscape(name))
 }

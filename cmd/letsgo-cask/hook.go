@@ -95,15 +95,27 @@ func caskFromHookInput(in plugin.TapFilesInput, cfg pluginConfig) (*cask, error)
 			continue
 		}
 
-		d := &download{URL: a.URL, SHA256: a.SHA256}
+		var slot **download
 		switch a.Arch {
 		case "arm64":
-			c.ARM = d
+			slot = &c.ARM
 		case "amd64":
-			c.Intel = d
+			slot = &c.Intel
 		default:
 			continue
 		}
+
+		// A second archive for one architecture would leave the cask installing
+		// whichever came last. A manifest from before letsgo v0.7.0 records no
+		// Variant, so a variant's archives read as the release's own; refuse
+		// rather than pick one.
+		if *slot != nil {
+			return nil, fmt.Errorf(
+				"the release has more than one macOS %s build called %s (%s is another);\n"+
+					"  a manifest from before letsgo v0.7.0 does not record which archives belong to a variant",
+				a.Arch, want, a.Archive)
+		}
+		*slot = &download{URL: a.URL, SHA256: a.SHA256}
 		c.Binaries = merge(c.Binaries, a.Binaries)
 	}
 
