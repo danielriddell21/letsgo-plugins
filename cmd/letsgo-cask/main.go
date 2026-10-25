@@ -37,14 +37,10 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
-	"io/fs"
 	"net/url"
 	"os"
-	"path"
-	"sort"
 	"strings"
 
 	coremanifest "github.com/danielriddell21/letsgo/manifest"
@@ -60,117 +56,6 @@ func main() {
 		fmt.Fprintln(os.Stderr, "letsgo-cask:", err)
 		os.Exit(1)
 	}
-}
-
-// pluginConfig is letsgo-cask.mod, decoded.
-type pluginConfig struct {
-	Variant string
-	Token   string
-}
-
-// answerTapFiles is this plugin's answer to the tap-files hook.
-func answerTapFiles(in plugin.TapFilesInput) (plugin.TapFilesOutput, error) {
-	cfg, err := readPluginConfig(in.ConfigDir)
-	if err != nil {
-		return plugin.TapFilesOutput{}, err
-	}
-
-	c, err := caskFromHookInput(in, cfg)
-	if err != nil {
-		return plugin.TapFilesOutput{}, err
-	}
-
-	return plugin.TapFilesOutput{Files: []plugin.TapFile{
-		{Path: path.Join("Casks", c.Token+".rb"), Content: c.render()},
-	}}, nil
-}
-
-// readPluginConfig parses the plugin's own config, which core locates: the
-// config dir first, then the legacy file at the repository root. Missing
-// entirely is not an error: a release with one darwin build and no variant
-// needs neither directive.
-func readPluginConfig(configDir string) (pluginConfig, error) {
-	file, err := plugin.LoadConfig(configDir, "cask")
-	if errors.Is(err, fs.ErrNotExist) {
-		return pluginConfig{}, nil
-	}
-	if err != nil {
-		return pluginConfig{}, fmt.Errorf("reading the cask config: %w", err)
-	}
-
-	var cfg pluginConfig
-	seen := map[string]bool{}
-
-	for _, l := range file.Lines {
-		if len(l.Args) != 1 {
-			return pluginConfig{}, file.Errorf(l, "expected `variant <name>` or `token <name>`, got %q",
-				strings.Join(append([]string{l.Keyword}, l.Args...), " "))
-		}
-		if seen[l.Keyword] {
-			return pluginConfig{}, file.Errorf(l, "%s is already set", l.Keyword)
-		}
-		seen[l.Keyword] = true
-
-		switch l.Keyword {
-		case "variant":
-			cfg.Variant = l.Args[0]
-		case "token":
-			cfg.Token = l.Args[0]
-		default:
-			return pluginConfig{}, file.Errorf(l, "unknown directive %q", l.Keyword)
-		}
-	}
-	return cfg, nil
-}
-
-// caskFromHookInput builds a cask from the tap-files hook's own input: every
-// digest and URL is already there, built by core, so nothing here recomputes
-// one or asks the forge a question core has already answered.
-func caskFromHookInput(in plugin.TapFilesInput, cfg pluginConfig) (*cask, error) {
-	want := in.Project
-	if cfg.Variant != "" {
-		want = in.Project + "-" + cfg.Variant
-	}
-
-	c := &cask{
-		Token:    cfg.Token,
-		Version:  in.Version,
-		Name:     in.Project,
-		Desc:     in.Description,
-		Homepage: in.Homepage,
-		License:  in.License,
-		Caveats:  in.Caveats,
-	}
-
-	for _, a := range in.Artifacts {
-		if a.OS != "darwin" || a.Variant != cfg.Variant {
-			continue
-		}
-
-		d := &download{URL: a.URL, SHA256: a.SHA256}
-		switch a.Arch {
-		case "arm64":
-			c.ARM = d
-		case "amd64":
-			c.Intel = d
-		default:
-			continue
-		}
-		c.Binaries = merge(c.Binaries, a.Binaries)
-	}
-
-	if c.ARM == nil && c.Intel == nil {
-		return nil, fmt.Errorf(
-			"the release has no macOS build called %s;\n"+
-				"  a cask installs a macOS build, and this release published none under that name", want)
-	}
-	if len(c.Binaries) == 0 {
-		return nil, fmt.Errorf("the archives name no binaries, so the cask has nothing to install")
-	}
-	if c.Token == "" {
-		c.Token = want
-	}
-	return c, nil
 }
 
 // executableNames returns the archive's binaries, whichever way it spells them.
@@ -282,29 +167,6 @@ func read(path string) (*coremanifest.Manifest, error) {
 	return m, nil
 }
 
-// cask is a rendered Homebrew cask.
-type cask struct {
-	Token    string
-	Version  string
-	Name     string
-	Desc     string
-	Homepage string
-	License  string
-	Caveats  string
-
-	// ARM and Intel are the two macOS archives. Homebrew installs one cask on
-	// either architecture, so both live in one file under on_arm and on_intel.
-	ARM   *download
-	Intel *download
-
-	Binaries []string
-}
-
-type download struct {
-	URL    string
-	SHA256 string
-}
-
 // caskFields are the values a release cannot supply: they describe the
 // program rather than the artifacts, so they come from the command line.
 type caskFields struct {
@@ -387,82 +249,4 @@ func downloadURL(repo, tag, name string) string {
 	}
 	return fmt.Sprintf("https://github.com/%s/releases/download/%s/%s",
 		repo, strings.Join(segments, "/"), url.PathEscape(name))
-}
-
-func merge(into, add []string) []string {
-	seen := map[string]bool{}
-	for _, name := range into {
-		seen[name] = true
-	}
-	for _, name := range add {
-		if !seen[name] {
-			seen[name] = true
-			into = append(into, name)
-		}
-	}
-	sort.Strings(into)
-	return into
-}
-
-// render writes the cask.
-//
-// Written by hand rather than through a template because a cask is small and
-// the shape is worth reading in the source: an arch block each, then what to
-// install.
-func (c *cask) render() string {
-	var b strings.Builder
-
-	b.WriteString("# Generated by letsgo-cask. Do not edit; the next release will overwrite it.\n")
-	fmt.Fprintf(&b, "cask %s do\n", quote(c.Token))
-	fmt.Fprintf(&b, "  version %s\n\n", quote(c.Version))
-
-	writeArch(&b, "on_arm", c.ARM)
-	writeArch(&b, "on_intel", c.Intel)
-
-	fmt.Fprintf(&b, "  name %s\n", quote(c.Name))
-	if c.Desc != "" {
-		fmt.Fprintf(&b, "  desc %s\n", quote(c.Desc))
-	}
-	fmt.Fprintf(&b, "  homepage %s\n", quote(c.Homepage))
-	if c.License != "" {
-		fmt.Fprintf(&b, "  license %s\n", quote(c.License))
-	}
-	b.WriteString("\n")
-
-	// binary rather than app: letsgo publishes an executable, not a bundle, so
-	// claiming an .app would name something the archive does not contain.
-	for _, name := range c.Binaries {
-		fmt.Fprintf(&b, "  binary %s\n", quote(name))
-	}
-
-	// Last, as Homebrew's own style orders it: caveats are what the user reads
-	// after everything else has been decided.
-	if c.Caveats != "" {
-		b.WriteString("\n  caveats <<~EOS\n")
-		for _, line := range strings.Split(strings.TrimRight(c.Caveats, "\n"), "\n") {
-			fmt.Fprintf(&b, "    %s\n", line)
-		}
-		b.WriteString("  EOS\n")
-	}
-
-	b.WriteString("end\n")
-	return b.String()
-}
-
-func writeArch(b *strings.Builder, block string, d *download) {
-	if d == nil {
-		return
-	}
-	fmt.Fprintf(b, "  %s do\n", block)
-	fmt.Fprintf(b, "    url %s\n", quote(d.URL))
-	fmt.Fprintf(b, "    sha256 %s\n", quote(d.SHA256))
-	b.WriteString("  end\n\n")
-}
-
-// quote renders a Ruby double-quoted string. Only the two characters that can
-// end or escape one need handling, and silently producing invalid Ruby is not
-// an acceptable way to deal with them.
-func quote(s string) string {
-	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`)
-	return `"` + r.Replace(s) + `"`
 }
