@@ -17,8 +17,8 @@ const published = `{
   "artifacts": [
     {"name":"gambit_1.4.0_darwin_arm64.tar.gz","os":"darwin","arch":"arm64","sha256":"base-arm","binary":"gambit"},
     {"name":"gambit_1.4.0_linux_amd64.tar.gz","os":"linux","arch":"amd64","sha256":"base-linux","binary":"gambit"},
-    {"name":"gambit-gui_1.4.0_darwin_arm64.tar.gz","os":"darwin","arch":"arm64","sha256":"gui-arm","binary":"gambit-gui"},
-    {"name":"gambit-gui_1.4.0_darwin_amd64.tar.gz","os":"darwin","arch":"amd64","sha256":"gui-intel","binary":"gambit-gui"}
+    {"name":"gambit-gui_1.4.0_darwin_arm64.tar.gz","variant":"gui","os":"darwin","arch":"arm64","sha256":"gui-arm","binary":"gambit-gui"},
+    {"name":"gambit-gui_1.4.0_darwin_amd64.tar.gz","variant":"gui","os":"darwin","arch":"amd64","sha256":"gui-intel","binary":"gambit-gui"}
   ]
 }`
 
@@ -46,7 +46,7 @@ func generate(t *testing.T, args ...string) string {
 }
 
 // The variant's archives, not the release's own: both are macOS builds of the
-// same project, and only the suffix tells them apart.
+// same project, and only the Variant letsgo recorded tells them apart.
 func TestCaskInstallsTheVariantsArchives(t *testing.T) {
 	got := generate(t, "--repo", "you/gambit", "--variant", "gui", manifestFile(t, published))
 
@@ -93,7 +93,7 @@ func TestCaskRefusesWhatItCannotBuild(t *testing.T) {
 		{"no repository", "--repo is required", []string{path}},
 		{
 			"a variant with no macOS build",
-			"no macOS archive",
+			"no macOS build",
 			[]string{"--repo", "you/gambit", "--variant", "nope", path},
 		},
 		{"no manifest named", "expected one argument", []string{"--repo", "you/gambit"}},
@@ -352,33 +352,6 @@ func TestCaskKeepsAScopedTagInTheDownloadURL(t *testing.T) {
 	}
 }
 
-func TestDownloadURL(t *testing.T) {
-	tests := []struct {
-		name, tag, asset, want string
-	}{
-		{"root tag", "v1.4.0", "gambit_1.4.0_darwin_arm64.tar.gz", "https://github.com/you/gambit/releases/download/v1.4.0/gambit_1.4.0_darwin_arm64.tar.gz"},
-		{"scoped tag keeps its slashes", "services/api/v1.4.0", "a.tar.gz", "https://github.com/you/gambit/releases/download/services/api/v1.4.0/a.tar.gz"},
-		{"a character a URL cannot carry is escaped", "v1.4.0+build 1", "a b#c.tar.gz", "https://github.com/you/gambit/releases/download/v1.4.0+build%201/a%20b%23c.tar.gz"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := downloadURL("you/gambit", tt.tag, tt.asset); got != tt.want {
-				t.Errorf("downloadURL() = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
-// A project named after its own version must not be cut at the first
-// "_<version>_": core strips exactly the suffix the builder appended.
-func TestCaskReadsABaseNameThatContainsTheVersion(t *testing.T) {
-	odd := strings.NewReplacer("gambit_1.4.0_", "gambit_1.4.0_x_1.4.0_", "\"project\": \"gambit\"", "\"project\": \"gambit_1.4.0_x\"").Replace(published)
-	got := generate(t, "--repo", "you/gambit", manifestFile(t, odd))
-	if !strings.Contains(got, "gambit_1.4.0_x_1.4.0_darwin_arm64.tar.gz") {
-		t.Errorf("the cask lost the archive:\n%s", got)
-	}
-}
-
 func TestReadPluginConfigReportsAnUnreadableFile(t *testing.T) {
 	t.Chdir(t.TempDir())
 	// A directory where the file should be exists but cannot be read, which is
@@ -390,5 +363,23 @@ func TestReadPluginConfigReportsAnUnreadableFile(t *testing.T) {
 	_, err := readPluginConfig(".letsgo")
 	if err == nil || !strings.Contains(err.Error(), "letsgo-cask.mod") {
 		t.Errorf("readPluginConfig() error = %v, want one naming letsgo-cask.mod", err)
+	}
+}
+
+// A manifest from before letsgo v0.7.0 records no Variant, so a variant's
+// archives look like the release's own. Two macOS builds for one architecture
+// are refused rather than leaving the cask on whichever came last, and a
+// variant cannot be found at all.
+func TestCaskRefusesAManifestThatRecordsNoVariant(t *testing.T) {
+	path := manifestFile(t, strings.ReplaceAll(published, `"variant":"gui",`, ""))
+
+	err := run([]string{"--repo", "you/gambit", path}, os.Stdout)
+	if err == nil || !strings.Contains(err.Error(), "more than one macOS arm64 build called gambit") {
+		t.Errorf("err = %v, want a refusal naming the second arm64 build", err)
+	}
+
+	err = run([]string{"--repo", "you/gambit", "--variant", "gui", path}, os.Stdout)
+	if err == nil || !strings.Contains(err.Error(), "no macOS build called gambit-gui") {
+		t.Errorf("err = %v, want a refusal naming the missing variant", err)
 	}
 }
